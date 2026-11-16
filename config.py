@@ -192,3 +192,39 @@ WEEKLY_OUTLOOK_ON_MONDAY = True
 
 # Upozornění X minut před událostí
 REMIND_MINUTES_BEFORE = 15
+
+# ---------------------------------------------------------------------------
+# TÝDENNÍ SOUHRN (sobota)
+# ---------------------------------------------------------------------------
+WEEKLY_REPORT = True
+WEEKLY_REPORT_WEEKDAY = 5   # 0 = pondělí … 5 = sobota
+WEEKLY_REPORT_HOUR = 9      # místní čas
+
+# AI komentář přes Claude API – použije se jen když je v GitHub Secrets ANTHROPIC_API_KEY.
+# Bez klíče přijdou jen čísla + hlavní zprávy týdne ke každému aktivu.
+WEEKLY_AI_MODEL = "claude-sonnet-5-5"
+
+# Sledovaná aktiva: (skupina, [(název, Yahoo symbol, Stooq symbol, typ)])
+# typ "price" = změna v %, "yield" = výnos, změna v bazických bodech
+MARKETS = [
+    ("💵 Dolar", [
+        ("DXY", "DX-Y.NYB", "dx.f", "price"),
+        ("EUR/USD", "EURUSD=X", "eurusd", "price"),
+        ("USD/JPY", "JPY=X", "usdjpy", "price"),
+        ("US 10Y výnos", "^TNX", "10yusy.b", "yield"),
+    ]),
+    ("📈 Indexy", [
+        ("S&P 500", "^GSPC", "^spx", "price"),
+        ("Nasdaq 100", "^NDX", "^ndx", "price"),
+        ("Dow Jones", "^DJI", "^dji", "price"),
+        ("DAX", "^GDAXI", "^dax", "price"),
+    ]),
+    ("🛢 Komodity", [
+        ("Ropa WTI", "CL=F", "cl.f", "price"),
+        ("Ropa Brent", "BZ=F", "cb.f", "price"),
+        ("Zlato", "GC=F", "gc.f", "price"),
+        ("Stříbro", "SI=F", "si.f", "price"),
+        ("Měď", "HG=F", "hg.f", "price"),
+        ("Zemní plyn", "NG=F", "ng.f", "price"),
+    ]),
+]
