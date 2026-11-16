@@ -1,0 +1,635 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Red News bot – posílá do Telegramu jen zprávy s velkým dopadem na USD, indexy a komodity.
+
+Jeden běh = stáhne zdroje, ohodnotí headliny, pošle nové důležité zprávy,
+zkontroluje ekonomický kalendář (ranní přehled + upozornění před událostí) a uloží stav.
+Bez externích knihoven – jen standardní Python 3.10+.
+
+Použití:
+  python news_bot.py            # běžný běh (GitHub Actions každých 5 min)
+  python news_bot.py --test     # testovací zpráva + stav zdrojů + ukázka skórování
+  python news_bot.py --dry-run  # nic neposílá, jen vypíše do konzole
+"""
+import argparse
+import html
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
+
+import config as C
+
+TZ = ZoneInfo(C.TIMEZONE)
+UTC = timezone.utc
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0 Safari/537.36 RedNewsBot/1.0"
+)
+FLAGS = {
+    "USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "🇬🇧", "JPY": "🇯🇵", "CNY": "🇨🇳", "CAD": "🇨🇦",
+    "AUD": "🇦🇺", "NZD": "🇳🇿", "CHF": "🇨🇭", "ALL": "🌐",
+}
+CZ_DAYS = ["pondělí", "úterý", "středa", "čtvrtek", "pátek", "sobota", "neděle"]
+STOPWORDS = set(
+    "a an the of to in on for at by with from as is are was were be been it its this that and or "
+    "but not no vs versus says said say after before over under amid into than more less up down "
+    "us u.s. new year m/m y/y q/q mm yy qq".split()
+)
+FLAGS_I = re.IGNORECASE
+
+# ---------------------------------------------------------------------------
+# Předkompilované vzory
+# ---------------------------------------------------------------------------
+MUST_RE = [re.compile(p, FLAGS_I) for p in C.MUST_SEND]
+GROUPS_RE = [(w, [re.compile(p, FLAGS_I) for p in pats]) for w, pats in C.KEYWORD_GROUPS]
+NEG_RE = [re.compile(p, FLAGS_I) for p in C.NEGATIVE_PATTERNS]
+DATA_RE = re.compile(C.DATA_RELEASE_PATTERN, FLAGS_I)
+TAGS_RE = [(label, re.compile(p, FLAGS_I)) for label, p in C.ASSET_TAGS]
+CAL_ALWAYS_RE = [re.compile(p, FLAGS_I) for p in C.CALENDAR_ALWAYS]
+
+
+def log(*a):
+    print(datetime.now(TZ).strftime("%H:%M:%S"), *a, flush=True)
+
+
+def now_utc():
+    return datetime.now(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Stav (ukládá se mezi běhy přes GitHub Actions cache)
+# ---------------------------------------------------------------------------
+def load_state(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            st = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        st = {}
+    st.setdefault("initialized", False)
+    st.setdefault("seen", {})
+    st.setdefault("sent", [])
+    st.setdefault("reminded", {})
+    st.setdefault("summary_date", "")
+    st.setdefault("calendar", {"fetched_at": 0, "events": []})
+    st.setdefault("health", {})
+    return st
+
+
+def save_state(st, path):
+    t = time.time()
+    st["seen"] = {k: v for k, v in st["seen"].items() if t - v < 4 * 86400}
+    st["sent"] = [s for s in st["sent"] if t - s["t"] < 2 * 86400][-300:]
+    st["reminded"] = {k: v for k, v in st["reminded"].items() if t - v < 8 * 86400}
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(st, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# Stahování a parsování feedů
+# ---------------------------------------------------------------------------
+def fetch(url, timeout=20):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/rss+xml, application/xml, application/json, text/xml, */*",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def _text(el):
+    if el is None:
+        return ""
+    return "".join(el.itertext()).strip()
+
+
+def _clean(s):
+    s = html.unescape(re.sub(r"<[^>]+>", " ", s or ""))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _parse_date(s):
+    if not s:
+        return None
+    s = s.strip()
+    try:
+        d = parsedate_to_datetime(s)
+    except (TypeError, ValueError, IndexError):
+        try:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=UTC)
+    return d.astimezone(UTC)
+
+
+def parse_feed(raw, source):
+    """Vrátí seznam položek {id,title,link,published,publisher,source,trust}."""
+    root = ET.fromstring(raw)
+    atom = "{http://www.w3.org/2005/Atom}"
+    items = []
+    nodes = root.iter("item")
+    is_atom = False
+    nodes = list(nodes)
+    if not nodes:
+        nodes = list(root.iter(atom + "entry"))
+        is_atom = True
+    for n in nodes:
+        if is_atom:
+            title = _clean(_text(n.find(atom + "title")))
+            link_el = n.find(atom + "link")
+            link = link_el.get("href", "") if link_el is not None else ""
+            guid = _text(n.find(atom + "id")) or link
+            pub = _parse_date(_text(n.find(atom + "updated")) or _text(n.find(atom + "published")))
+            publisher = ""
+        else:
+            title = _clean(_text(n.find("title")))
+            link = _text(n.find("link"))
+            guid = _text(n.find("guid")) or link
+            pub = _parse_date(_text(n.find("pubDate")) or _text(n.find("{http://purl.org/dc/elements/1.1/}date")))
+            publisher = _text(n.find("source"))
+        if not title:
+            continue
+        # Úklid titulků
+        title = re.sub(r"^FinancialJuice:\s*", "", title, flags=FLAGS_I)
+        if source.get("google") and publisher and title.endswith(" - " + publisher):
+            title = title[: -len(" - " + publisher)].strip()
+        items.append(
+            {
+                "id": (guid or link or title)[:300],
+                "title": title,
+                "link": link.strip(),
+                "published": pub.timestamp() if pub else None,
+                "publisher": publisher or source["name"],
+                "source": source["name"],
+                "trust": source.get("trust", 0),
+            }
+        )
+    return items
+
+
+def collect_items(st, alerts_out):
+    """Stáhne všechny zdroje, aktualizuje jejich zdraví. Vrátí seznam položek."""
+    all_items = []
+    for src in C.SOURCES:
+        h = st["health"].setdefault(src["name"], {"fails": 0, "alerted": False, "error": "", "count": 0})
+        try:
+            items = parse_feed(fetch(src["url"]), src)
+            all_items.extend(items)
+            if h.get("alerted"):
+                alerts_out.append(f"✅ Zdroj <b>{html.escape(src['name'])}</b> zase funguje.")
+            h.update(fails=0, alerted=False, error="", count=len(items))
+            log(f"OK   {src['name']}: {len(items)} položek")
+        except Exception as e:  # noqa: BLE001 – jeden rozbitý zdroj nesmí shodit bota
+            h["fails"] = h.get("fails", 0) + 1
+            h["error"] = f"{type(e).__name__}: {e}"[:200]
+            h["count"] = 0
+            log(f"FAIL {src['name']}: {h['error']}")
+            # Po ~1 hodině nepřetržitých chyb (12 běhů) jednou upozorni
+            if h["fails"] >= 12 and not h.get("alerted"):
+                h["alerted"] = True
+                alerts_out.append(
+                    f"⚠️ Zdroj <b>{html.escape(src['name'])}</b> hodinu nefunguje: "
+                    f"<code>{html.escape(h['error'])}</code>"
+                )
+    return all_items
+
+
+# ---------------------------------------------------------------------------
+# Skórování
+# ---------------------------------------------------------------------------
+NORMALIZE = [
+    (r"\bper ?cent\b", "%"), (r"(\d)\s+%", r"\1%"), (r"\beuropean union\b", "eu"),
+    (r"\bfederal reserve\b", "fed"), (r"\bunited states\b|\bu\.s\.\b", "us"),
+    (r"\bbasis points?\b|\bbps?\b", "bp"), (r"\bcrude oil\b", "oil"), (r"\bbillion\b", "bn"),
+    (r"\bmillion\b", "mn"), (r"\bannounces?\b|\bannounced\b|\bunveils?\b", "announce"),
+    (r"\bimposes?\b|\bslaps?\b", "impose"), (r"\bcuts\b", "cut"), (r"\bhikes\b|\braises\b", "hike"),
+]
+NORMALIZE_RE = [(re.compile(p, FLAGS_I), r) for p, r in NORMALIZE]
+ENTITIES = {
+    "fed", "fomc", "ecb", "boj", "boe", "pboc", "snb", "rba", "boc", "rbnz", "opec", "opec+",
+    "us", "eu", "china", "japan", "uk", "germany", "france", "canada", "russia", "iran", "israel",
+    "ukraine", "india", "mexico", "eurozone", "oil", "gold", "silver", "copper", "gas",
+}
+
+
+def tokens(s):
+    s = s.lower()
+    for r, rep in NORMALIZE_RE:
+        s = r.sub(rep, s)
+    words = re.findall(r"[a-z0-9][a-z0-9\-\.%/+]*", s)
+    return {w.strip(".") for w in words if w.strip(".") and w not in STOPWORDS and len(w) > 1}
+
+
+def similarity(a, b):
+    """Max z Jaccardu a 'overlap' koeficientu (krátký titulek obsažený v delším)."""
+    if not a or not b:
+        return 0.0
+    # Různé instituce/země = různé zprávy (Fed vs ECB)
+    ea, eb = a & ENTITIES, b & ENTITIES
+    if ea and eb and not (ea & eb):
+        return 0.0
+    # Obě mají čísla, ale žádné společné = různá data (CPI m/m 0.4% vs y/y 3.1%)
+    na = {w for w in a if re.search(r"\d", w)}
+    nb_ = {w for w in b if re.search(r"\d", w)}
+    if na and nb_ and not (na & nb_):
+        return 0.0
+    inter = len(a & b)
+    jac = inter / len(a | b)
+    small = min(len(a), len(b))
+    overlap = inter / small if small >= 4 else 0.0
+    return max(jac, overlap * 0.85)
+
+
+def calendar_keywords(title):
+    junk = {"m/m", "y/y", "q/q", "change", "rate", "flash", "prelim", "final", "s", "the", "and", "of", "index"}
+    return {w for w in re.findall(r"[a-z][a-z\-]+", title.lower()) if w not in junk and len(w) >= 3}
+
+
+def score_item(item, active_events):
+    t = item["title"]
+    reasons = []
+    for r in MUST_RE:
+        if r.search(t):
+            return 99, ["MUST"]
+    score = 0
+    for weight, pats in GROUPS_RE:
+        hits = sum(1 for r in pats if r.search(t))
+        if hits:
+            score += min(hits * weight, 2 * weight)
+            reasons.append(f"+{min(hits * weight, 2 * weight)}")
+    if DATA_RE.search(t) and re.search(r"\d", t):
+        score += C.DATA_RELEASE_BONUS
+        reasons.append("data")
+    score += item.get("trust", 0)
+    pub = (item.get("publisher") or "").lower()
+    for name, bonus in C.PUBLISHER_TRUST.items():
+        if name in pub:
+            score += bonus
+            reasons.append(f"src+{bonus}")
+            break
+    low = t.lower()
+    for ev in active_events:
+        kws = calendar_keywords(ev["title"])
+        if kws and any(k in low for k in kws) and re.search(r"\d", t):
+            score += C.CALENDAR_MATCH_BONUS
+            reasons.append("kalendář")
+            break
+    if any(r.search(t) for r in NEG_RE):
+        score -= C.NEGATIVE_PENALTY
+        reasons.append("šum")
+    return score, reasons
+
+
+def asset_tags(title):
+    return [label for label, r in TAGS_RE if r.search(title)]
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+class Telegram:
+    def __init__(self, dry_run=False):
+        self.dry = dry_run
+        self.token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        self.chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+        if not self.dry and (not self.token or not self.chat):
+            sys.exit(
+                "Chybí TELEGRAM_BOT_TOKEN nebo TELEGRAM_CHAT_ID. "
+                "Nastav je v GitHubu: Settings → Secrets and variables → Actions."
+            )
+
+    def send(self, text, silent=False):
+        if self.dry:
+            print("\n----- TELEGRAM -----\n" + text + "\n--------------------")
+            return True
+        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        for chunk in split_message(text):
+            body = json.dumps(
+                {
+                    "chat_id": self.chat,
+                    "text": chunk,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": not C.LINK_PREVIEW,
+                    "disable_notification": silent,
+                }
+            ).encode()
+            for attempt in range(3):
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=20) as r:
+                        r.read()
+                    break
+                except urllib.error.HTTPError as e:
+                    detail = e.read().decode(errors="ignore")
+                    if e.code == 429:
+                        wait = json.loads(detail).get("parameters", {}).get("retry_after", 3)
+                        time.sleep(min(int(wait), 30))
+                        continue
+                    log(f"Telegram chyba {e.code}: {detail}")
+                    return False
+                except Exception as e:  # noqa: BLE001
+                    log(f"Telegram chyba: {e}")
+                    time.sleep(2)
+            time.sleep(0.4)
+        return True
+
+
+def split_message(text, limit=3900):
+    if len(text) <= limit:
+        return [text]
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > limit:
+            parts.append(cur)
+            cur = ""
+        cur += line + "\n"
+    if cur.strip():
+        parts.append(cur)
+    return parts
+
+
+def is_quiet(local_now):
+    if not C.QUIET_HOURS:
+        return False
+    a, b = C.QUIET_HOURS
+    h = local_now.hour
+    return (a <= h < b) if a < b else (h >= a or h < b)
+
+
+def fmt_time(ts):
+    return datetime.fromtimestamp(ts, TZ).strftime("%H:%M") if ts else ""
+
+
+def format_alert(item, score):
+    title = html.escape(item["title"])
+    tags = asset_tags(item["title"])
+    meta = " · ".join(x for x in [html.escape(item["publisher"]), fmt_time(item.get("published"))] if x)
+    lines = [f"🔴 <b>{title}</b>"]
+    if tags:
+        lines.append(" · ".join(tags))
+    tail = f"<i>{meta}</i>"
+    if item.get("link"):
+        tail += f' · <a href="{html.escape(item["link"], quote=True)}">otevřít</a>'
+    tail += f" · <i>skóre {score if score < 99 else 'MAX'}</i>"
+    lines.append(tail)
+    return "\n".join(lines)
+
+
+def format_digest(scored):
+    lines = [f"🔴 <b>{len(scored)} důležitých zpráv</b>"]
+    for score, item in scored:
+        link = html.escape(item.get("link", ""), quote=True)
+        t = html.escape(item["title"])
+        src = html.escape(item["publisher"])
+        entry = f'• <a href="{link}">{t}</a>' if link else f"• {t}"
+        lines.append(f"{entry} <i>({src}, {fmt_time(item.get('published'))})</i>")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Ekonomický kalendář
+# ---------------------------------------------------------------------------
+def refresh_calendar(st, force=False):
+    cal = st["calendar"]
+    if not force and time.time() - cal.get("fetched_at", 0) < C.CALENDAR_REFRESH_MINUTES * 60:
+        return cal["events"], True
+    h = st["health"].setdefault("Kalendář (ForexFactory)", {"fails": 0, "alerted": False, "error": "", "count": 0})
+    try:
+        data = json.loads(fetch(C.CALENDAR_URL))
+        events = []
+        for e in data:
+            title = e.get("title", "")
+            cur = e.get("country", "")
+            always = any(r.search(title) for r in CAL_ALWAYS_RE)
+            if not always and (e.get("impact") not in C.CALENDAR_IMPACTS or cur not in C.CALENDAR_CURRENCIES):
+                continue
+            if always and cur not in C.CALENDAR_CURRENCIES and cur != "ALL":
+                continue
+            try:
+                dt = datetime.fromisoformat(e["date"])
+            except (KeyError, ValueError):
+                continue
+            events.append(
+                {
+                    "key": f"{cur}|{title}|{e['date']}",
+                    "title": title,
+                    "country": cur,
+                    "ts": dt.astimezone(UTC).timestamp(),
+                    # 00:00 v čase zdroje = "celý den / tentative"
+                    "all_day": dt.hour == 0 and dt.minute == 0,
+                    "impact": e.get("impact", ""),
+                    "forecast": e.get("forecast", ""),
+                    "previous": e.get("previous", ""),
+                }
+            )
+        events.sort(key=lambda x: x["ts"])
+        cal.update(fetched_at=time.time(), events=events)
+        h.update(fails=0, error="", count=len(events))
+        log(f"OK   Kalendář: {len(events)} sledovaných událostí")
+        return events, True
+    except Exception as e:  # noqa: BLE001
+        h["fails"] = h.get("fails", 0) + 1
+        h["error"] = f"{type(e).__name__}: {e}"[:200]
+        # Při chybě zkus znovu za 10 min, ne hned (limit feedu)
+        cal["fetched_at"] = time.time() - (C.CALENDAR_REFRESH_MINUTES - 10) * 60
+        log(f"FAIL Kalendář: {h['error']}")
+        return cal["events"], False
+
+
+def fmt_event_line(ev, with_day=False):
+    d = datetime.fromtimestamp(ev["ts"], TZ)
+    when = "celý den" if ev["all_day"] else d.strftime("%H:%M")
+    if with_day:
+        when = f"{CZ_DAYS[d.weekday()][:2]} {d.day}. {when}"
+    flag = FLAGS.get(ev["country"], "")
+    extra = []
+    if ev.get("forecast"):
+        extra.append(f"odhad {html.escape(ev['forecast'])}")
+    if ev.get("previous"):
+        extra.append(f"předch. {html.escape(ev['previous'])}")
+    dot = "🔴" if ev["impact"] == "High" else "🟠"
+    line = f"{dot} <b>{when}</b> {flag} {html.escape(ev['title'])}"
+    if extra:
+        line += f" <i>({', '.join(extra)})</i>"
+    return line
+
+
+def daily_summary(events, local_now):
+    today = local_now.date()
+    todays = [e for e in events if datetime.fromtimestamp(e["ts"], TZ).date() == today]
+    head = f"📅 <b>Červené události – {CZ_DAYS[today.weekday()]} {today.day}. {today.month}.</b>"
+    lines = [head]
+    if todays:
+        lines += [fmt_event_line(e) for e in todays]
+    else:
+        lines.append("Dnes žádné červené události pro sledované měny.")
+    if C.WEEKLY_OUTLOOK_ON_MONDAY and today.weekday() == 0:
+        rest = [e for e in events if datetime.fromtimestamp(e["ts"], TZ).date() > today]
+        if rest:
+            lines += ["", "🗓 <b>Zbytek týdne</b>"] + [fmt_event_line(e, with_day=True) for e in rest]
+    lines.append('\n<a href="https://www.forexfactory.com/calendar">ForexFactory kalendář</a>')
+    return "\n".join(lines)
+
+
+def calendar_tasks(st, events, local_now, tg, silent):
+    # Ranní přehled
+    if C.DAILY_SUMMARY_HOUR is not None:
+        today = local_now.date().isoformat()
+        if local_now.hour >= C.DAILY_SUMMARY_HOUR and st["summary_date"] != today:
+            if tg.send(daily_summary(events, local_now), silent=silent):
+                st["summary_date"] = today
+    # Upozornění před událostí (seskupené podle času)
+    t = time.time()
+    due = [
+        e
+        for e in events
+        if not e["all_day"]
+        and e["key"] not in st["reminded"]
+        and 0 < (e["ts"] - t) / 60 <= C.REMIND_MINUTES_BEFORE + 5
+    ]
+    by_time = {}
+    for e in due:
+        by_time.setdefault(e["ts"], []).append(e)
+    for ts, evs in sorted(by_time.items()):
+        mins = max(1, round((ts - t) / 60))
+        lines = [f"⏰ <b>Za {mins} min ({fmt_time(ts)})</b>"] + [fmt_event_line(e) for e in evs]
+        if tg.send("\n".join(lines), silent=silent):
+            for e in evs:
+                st["reminded"][e["key"]] = t
+    # Události, které právě vycházejí → bonus pro headliny s výsledkem
+    return [e for e in events if not e["all_day"] and -5 * 60 <= t - e["ts"] <= 60 * 60]
+
+
+# ---------------------------------------------------------------------------
+# Hlavní běh
+# ---------------------------------------------------------------------------
+def select_alerts(st, items, active_events):
+    t = time.time()
+    recent_sent = [set(s["tok"]) for s in st["sent"] if t - s["t"] < C.DUPLICATE_WINDOW_HOURS * 3600]
+    picked, picked_tok, seen_links = [], [], set()
+    scored_all = []
+    for it in items:
+        if it["id"] in st["seen"]:
+            continue
+        st["seen"][it["id"]] = t
+        if it.get("published") and t - it["published"] > C.MAX_AGE_HOURS * 3600:
+            continue
+        score, reasons = score_item(it, active_events)
+        scored_all.append((score, it, reasons))
+    scored_all.sort(key=lambda x: -x[0])
+    for score, it, reasons in scored_all:
+        if score < C.SCORE_THRESHOLD:
+            continue
+        tok = tokens(it["title"])
+        if it.get("link") in seen_links:
+            continue
+        if any(similarity(tok, s) >= C.DUPLICATE_SIMILARITY for s in recent_sent + picked_tok):
+            log(f"DUP  {it['title']}")
+            continue
+        picked.append((score, it))
+        picked_tok.append(tok)
+        seen_links.add(it.get("link"))
+        log(f"SEND [{score}] {it['title']}  {reasons}")
+    return picked
+
+
+def run(args):
+    st = load_state(args.state)
+    tg = Telegram(dry_run=args.dry_run)
+    local_now = datetime.now(TZ)
+    silent = is_quiet(local_now)
+    health_alerts = []
+
+    events, _ = refresh_calendar(st, force=args.test)
+    items = collect_items(st, health_alerts)
+
+    if args.test:
+        run_test(st, tg, items, events, local_now)
+        save_state(st, args.state)
+        return
+
+    # První spuštění: jen si zapamatuj aktuální zprávy, ať nepřijde lavina starých
+    if not st["initialized"]:
+        for it in items:
+            st["seen"][it["id"]] = time.time()
+        if C.DAILY_SUMMARY_HOUR is not None and local_now.hour >= C.DAILY_SUMMARY_HOUR:
+            st["summary_date"] = local_now.date().isoformat()
+        st["initialized"] = True
+        tg.send(
+            "✅ <b>Red News bot běží.</b>\nOd teď ti budu posílat jen zprávy s velkým dopadem "
+            "na USD, indexy a komodity + červené události z kalendáře."
+        )
+        save_state(st, args.state)
+        return
+
+    active = calendar_tasks(st, events, local_now, tg, silent)
+    picked = select_alerts(st, items, active)
+
+    if picked:
+        if len(picked) <= C.MAX_SEPARATE_MESSAGES_PER_RUN:
+            for score, it in picked:
+                tg.send(format_alert(it, score), silent=silent)
+        else:
+            tg.send(format_digest(picked), silent=silent)
+        t = time.time()
+        for score, it in picked:
+            st["sent"].append({"t": t, "tok": sorted(tokens(it["title"])), "title": it["title"]})
+
+    for msg in health_alerts:
+        tg.send(msg, silent=True)
+
+    save_state(st, args.state)
+    log(f"Hotovo: {len(items)} položek, posláno {len(picked)}.")
+
+
+def run_test(st, tg, items, events, local_now):
+    lines = ["🧪 <b>Test Red News bota</b>", "", "<b>Zdroje:</b>"]
+    for name, h in st["health"].items():
+        if h.get("fails"):
+            lines.append(f"❌ {html.escape(name)} – <code>{html.escape(h.get('error', ''))}</code>")
+        else:
+            lines.append(f"✅ {html.escape(name)} – {h.get('count', 0)} položek")
+    # Ukázka skórování – co by teď prošlo
+    t = time.time()
+    fresh = [it for it in items if not it.get("published") or t - it["published"] <= C.MAX_AGE_HOURS * 3600]
+    scored = sorted(((score_item(it, [])[0], it) for it in fresh), key=lambda x: -x[0])
+    uniq, seen_titles = [], set()
+    for s, it in scored:
+        if it["title"] not in seen_titles:
+            uniq.append((s, it))
+            seen_titles.add(it["title"])
+    lines += ["", f"<b>Top headliny za posledních {C.MAX_AGE_HOURS} h</b> (práh {C.SCORE_THRESHOLD}):"]
+    for s, it in uniq[:10]:
+        mark = "✅" if s >= C.SCORE_THRESHOLD else "▫️"
+        lines.append(f"{mark} [{s if s < 99 else 'MAX'}] {html.escape(it['title'])} <i>({html.escape(it['publisher'])})</i>")
+    if not uniq:
+        lines.append("— nic čerstvého —")
+    tg.send("\n".join(lines))
+    tg.send(daily_summary(events, local_now))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Red News Telegram bot")
+    ap.add_argument("--test", action="store_true", help="pošle testovací zprávu a stav zdrojů")
+    ap.add_argument("--dry-run", action="store_true", help="nic neposílá, jen vypíše")
+    ap.add_argument("--state", default="state.json", help="soubor se stavem")
+    run(ap.parse_args())
+
+
+if __name__ == "__main__":
+    main()
