@@ -51,6 +51,12 @@ def _gnews(query):
     return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
 
 
+def gnews_range(query, after, before):
+    """Google News za konkrétní období (after/before = 'YYYY-MM-DD')."""
+    q = quote_plus(f"{query} {_TOP_SITES} after:{after} before:{before}")
+    return f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+
+
 SOURCES = [
     # Rychlé "squawk" headliny – hlavní zdroj breaking zpráv a výsledků dat
     {"name": "FinancialJuice", "url": "https://www.financialjuice.com/feed.ashx?xy=rss", "trust": 1},
@@ -100,6 +106,7 @@ KEYWORD_GROUPS = [
         r"\bFOMC\b", r"\bFederal Open Market Committee\b", r"\bPowell\b",
         r"\brate (cut|hike)s?\b", r"\b(cut|hike|raise|lower)s? (interest )?rates\b", r"\bbasis points?\b|\b\d{2,3} ?bps?\b",
         r"\bnon-?farm\b", r"\bpayrolls?\b", r"\bCPI\b", r"\bcore PCE\b", r"\bPCE\b",
+        r"\b(consumer|producer|wholesale|import) prices\b|\bjobs report\b|\bjob growth\b",
         r"\bOPEC\+?\b", r"\btariffs?\b", r"\bsanctions?\b", r"\bintervention\b",
         r"\bdowngrades?\b", r"\bdefault\b", r"\bgovernment shutdown\b",
         r"\binvasion\b|\binvades\b", r"\bmissiles?\b|\bairstrikes?\b", r"\bceasefire\b",
@@ -203,6 +210,16 @@ WEEKLY_REPORT_HOUR = 9      # místní čas
 # AI komentář přes Claude API – použije se jen když je v GitHub Secrets ANTHROPIC_API_KEY.
 # Bez klíče přijdou jen čísla + hlavní zprávy týdne ke každému aktivu.
 WEEKLY_AI_MODEL = "claude-sonnet-5-5"
+
+# Pro souhrn se navíc dohledají titulky top agentur za celý týden (i to, co bot přes týden nezachytil)
+WEEKLY_NEWS_QUERIES = [
+    '(Fed OR FOMC OR Powell OR "rate cut" OR "rate hike" OR ECB OR "Bank of Japan")',
+    '(CPI OR PPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")',
+    '(oil OR crude OR OPEC OR gold OR Brent OR copper OR "natural gas")',
+    '(tariffs OR sanctions OR "Treasury yields" OR dollar OR "Wall Street" OR stocks)',
+]
+CALENDAR_URL_LASTWEEK = "https://nfs.faireconomy.media/ff_calendar_lastweek.json"
+CALENDAR_URL_NEXTWEEK = "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
 
 # Sledovaná aktiva: (skupina, [(název, Yahoo symbol, Stooq symbol, typ)])
 # typ "price" = změna v %, "yield" = výnos, změna v bazických bodech
