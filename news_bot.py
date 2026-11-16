@@ -20,6 +20,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -79,6 +80,7 @@ def load_state(path):
     st.setdefault("sent", [])
     st.setdefault("reminded", {})
     st.setdefault("summary_date", "")
+    st.setdefault("evening_date", "")
     st.setdefault("calendar", {"fetched_at": 0, "events": []})
     st.setdefault("health", {})
     return st
@@ -375,11 +377,54 @@ def fmt_time(ts):
     return datetime.fromtimestamp(ts, TZ).strftime("%H:%M") if ts else ""
 
 
+# ---------------------------------------------------------------------------
+# Překlad (bezplatný Google Translate, záloha MyMemory, jinak originál)
+# ---------------------------------------------------------------------------
+_TR_CACHE = {}
+
+
+def translate(text):
+    target = getattr(C, "TRANSLATE_TO", None)
+    if not target or not text:
+        return text
+    if text in _TR_CACHE:
+        return _TR_CACHE[text]
+    q = urllib.parse.quote(text)
+    out = None
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl={target}&dt=t&q={q}"
+        data = json.loads(fetch(url, timeout=10))
+        out = "".join(seg[0] for seg in data[0] if seg and seg[0]).strip()
+    except Exception as e:  # noqa: BLE001
+        log(f"Překlad Google selhal: {e}")
+        try:
+            url = f"https://api.mymemory.translated.net/get?q={q}&langpair=en|{target}"
+            data = json.loads(fetch(url, timeout=10))
+            cand = (data.get("responseData") or {}).get("translatedText") or ""
+            if cand and "MYMEMORY WARNING" not in cand.upper():
+                out = html.unescape(cand).strip()
+        except Exception as e2:  # noqa: BLE001
+            log(f"Překlad MyMemory selhal: {e2}")
+    out = out or text
+    _TR_CACHE[text] = out
+    return out
+
+
+def display_title(item):
+    """Vrátí (titulek k zobrazení, originál nebo None)."""
+    tr = translate(item["title"])
+    if tr != item["title"] and getattr(C, "SHOW_ORIGINAL", False):
+        return tr, item["title"]
+    return tr, None
+
+
 def format_alert(item, score):
-    title = html.escape(item["title"])
+    shown, original = display_title(item)
     tags = asset_tags(item["title"])
     meta = " · ".join(x for x in [html.escape(item["publisher"]), fmt_time(item.get("published"))] if x)
-    lines = [f"🔴 <b>{title}</b>"]
+    lines = [f"🔴 <b>{html.escape(shown)}</b>"]
+    if original:
+        lines.append(f"<i>{html.escape(original)}</i>")
     if tags:
         lines.append(" · ".join(tags))
     tail = f"<i>{meta}</i>"
@@ -394,7 +439,8 @@ def format_digest(scored):
     lines = [f"🔴 <b>{len(scored)} důležitých zpráv</b>"]
     for score, item in scored:
         link = html.escape(item.get("link", ""), quote=True)
-        t = html.escape(item["title"])
+        shown, _ = display_title(item)
+        t = html.escape(shown)
         src = html.escape(item["publisher"])
         entry = f'• <a href="{link}">{t}</a>' if link else f"• {t}"
         lines.append(f"{entry} <i>({src}, {fmt_time(item.get('published'))})</i>")
@@ -415,11 +461,16 @@ def refresh_calendar(st, force=False):
         for e in data:
             title = e.get("title", "")
             cur = e.get("country", "")
-            always = any(r.search(title) for r in CAL_ALWAYS_RE)
-            if not always and (e.get("impact") not in C.CALENDAR_IMPACTS or cur not in C.CALENDAR_CURRENCIES):
-                continue
-            if always and cur not in C.CALENDAR_CURRENCIES and cur != "ALL":
-                continue
+            holiday = e.get("impact") == "Holiday"
+            if holiday:
+                if cur not in getattr(C, "HOLIDAY_CURRENCIES", []):
+                    continue
+            else:
+                always = any(r.search(title) for r in CAL_ALWAYS_RE)
+                if not always and (e.get("impact") not in C.CALENDAR_IMPACTS or cur not in C.CALENDAR_CURRENCIES):
+                    continue
+                if always and cur not in C.CALENDAR_CURRENCIES and cur != "ALL":
+                    continue
             try:
                 dt = datetime.fromisoformat(e["date"])
             except (KeyError, ValueError):
@@ -431,7 +482,10 @@ def refresh_calendar(st, force=False):
                     "country": cur,
                     "ts": dt.astimezone(UTC).timestamp(),
                     # 00:00 v čase zdroje = "celý den / tentative"
-                    "all_day": dt.hour == 0 and dt.minute == 0,
+                    "all_day": holiday or (dt.hour == 0 and dt.minute == 0),
+                    "holiday": holiday,
+                    # datum události v čase zdroje (svátky platí celý den daného data)
+                    "date": dt.date().isoformat(),
                     "impact": e.get("impact", ""),
                     "forecast": e.get("forecast", ""),
                     "previous": e.get("previous", ""),
@@ -451,48 +505,82 @@ def refresh_calendar(st, force=False):
         return cal["events"], False
 
 
+def event_date(ev):
+    """Datum události v místním čase (svátky/celodenní podle data zdroje)."""
+    if ev.get("all_day") and ev.get("date"):
+        return datetime.fromisoformat(ev["date"]).date()
+    return datetime.fromtimestamp(ev["ts"], TZ).date()
+
+
 def fmt_event_line(ev, with_day=False):
-    d = datetime.fromtimestamp(ev["ts"], TZ)
-    when = "celý den" if ev["all_day"] else d.strftime("%H:%M")
-    if with_day:
-        when = f"{CZ_DAYS[d.weekday()][:2]} {d.day}. {when}"
+    d = event_date(ev)
     flag = FLAGS.get(ev["country"], "")
+    prefix = f"{CZ_DAYS[d.weekday()][:2]} {d.day}. " if with_day else ""
+    if ev.get("holiday"):
+        return (f"🏦 <b>{prefix}celý den</b> {flag} {ev['country']} – {html.escape(ev['title'])} "
+                f"<i>(svátek, banky zavřené → nižší likvidita)</i>")
+    when = "celý den" if ev["all_day"] else datetime.fromtimestamp(ev["ts"], TZ).strftime("%H:%M")
     extra = []
     if ev.get("forecast"):
         extra.append(f"odhad {html.escape(ev['forecast'])}")
     if ev.get("previous"):
         extra.append(f"předch. {html.escape(ev['previous'])}")
     dot = "🔴" if ev["impact"] == "High" else "🟠"
-    line = f"{dot} <b>{when}</b> {flag} {html.escape(ev['title'])}"
+    line = f"{dot} <b>{prefix}{when}</b> {flag} {html.escape(ev['title'])}"
     if extra:
         line += f" <i>({', '.join(extra)})</i>"
     return line
 
 
-def daily_summary(events, local_now):
-    today = local_now.date()
-    todays = [e for e in events if datetime.fromtimestamp(e["ts"], TZ).date() == today]
-    head = f"📅 <b>Červené události – {CZ_DAYS[today.weekday()]} {today.day}. {today.month}.</b>"
-    lines = [head]
-    if todays:
-        lines += [fmt_event_line(e) for e in todays]
+def day_summary(events, day, label, week_outlook=False):
+    """Přehled jednoho dne: svátky nahoře, pak události podle času."""
+    todays = [e for e in events if event_date(e) == day]
+    hol = [e for e in todays if e.get("holiday")]
+    evs = [e for e in todays if not e.get("holiday")]
+    lines = [f"📅 <b>Červené události {label} – {CZ_DAYS[day.weekday()]} {day.day}. {day.month}.</b>"]
+    lines += [fmt_event_line(e) for e in hol]
+    if evs:
+        lines += [fmt_event_line(e) for e in evs]
     else:
-        lines.append("Dnes žádné červené události pro sledované měny.")
-    if C.WEEKLY_OUTLOOK_ON_MONDAY and today.weekday() == 0:
-        rest = [e for e in events if datetime.fromtimestamp(e["ts"], TZ).date() > today]
+        lines.append("Žádné červené události pro sledované měny.")
+    if week_outlook:
+        rest = [e for e in events if event_date(e) > day]
         if rest:
             lines += ["", "🗓 <b>Zbytek týdne</b>"] + [fmt_event_line(e, with_day=True) for e in rest]
     lines.append('\n<a href="https://www.forexfactory.com/calendar">ForexFactory kalendář</a>')
     return "\n".join(lines)
 
 
+def daily_summary(events, local_now):
+    today = local_now.date()
+    return day_summary(events, today, "dnes",
+                       week_outlook=C.WEEKLY_OUTLOOK_ON_MONDAY and today.weekday() == 0)
+
+
+def evening_summary(events, local_now):
+    """Večerní přehled na zítřek. None, pokud je zítra víkend a nic se neděje."""
+    tomorrow = local_now.date() + timedelta(days=1)
+    has_any = any(event_date(e) == tomorrow for e in events)
+    if not has_any and tomorrow.weekday() >= 5:
+        return None
+    # V neděli večer přidej výhled celého týdne
+    week = C.WEEKLY_OUTLOOK_ON_MONDAY and tomorrow.weekday() == 0
+    return day_summary(events, tomorrow, "zítra", week_outlook=week)
+
+
 def calendar_tasks(st, events, local_now, tg, silent):
+    today = local_now.date().isoformat()
     # Ranní přehled
     if C.DAILY_SUMMARY_HOUR is not None:
-        today = local_now.date().isoformat()
         if local_now.hour >= C.DAILY_SUMMARY_HOUR and st["summary_date"] != today:
             if tg.send(daily_summary(events, local_now), silent=silent):
                 st["summary_date"] = today
+    # Večerní přehled na zítřek
+    eh = getattr(C, "EVENING_SUMMARY_HOUR", None)
+    if eh is not None and local_now.hour >= eh and st.get("evening_date") != today:
+        msg = evening_summary(events, local_now)
+        if msg is None or tg.send(msg, silent=silent):
+            st["evening_date"] = today
     # Upozornění před událostí (seskupené podle času)
     t = time.time()
     due = [
@@ -569,6 +657,9 @@ def run(args):
             st["seen"][it["id"]] = time.time()
         if C.DAILY_SUMMARY_HOUR is not None and local_now.hour >= C.DAILY_SUMMARY_HOUR:
             st["summary_date"] = local_now.date().isoformat()
+        eh = getattr(C, "EVENING_SUMMARY_HOUR", None)
+        if eh is not None and local_now.hour >= eh:
+            st["evening_date"] = local_now.date().isoformat()
         st["initialized"] = True
         tg.send(
             "✅ <b>Red News bot běží.</b>\nOd teď ti budu posílat jen zprávy s velkým dopadem "
@@ -621,6 +712,9 @@ def run_test(st, tg, items, events, local_now):
         lines.append("— nic čerstvého —")
     tg.send("\n".join(lines))
     tg.send(daily_summary(events, local_now))
+    ev = evening_summary(events, local_now)
+    if ev:
+        tg.send(ev)
 
 
 def main():
