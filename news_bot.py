@@ -531,6 +531,80 @@ def parse_calendar(data):
     return events
 
 
+# ---------------------------------------------------------------------------
+# ForexFactory web (libovolný týden včetně skutečných hodnot)
+# ---------------------------------------------------------------------------
+NY_TZ = ZoneInfo("America/New_York")
+FF_IMPACT = {"high": "High", "medium": "Medium", "low": "Low", "holiday": "Holiday", "non-economic": "Non-Economic"}
+
+
+def ff_week_url(monday):
+    sunday = monday - timedelta(days=1)
+    return f"https://www.forexfactory.com/calendar?week={sunday.strftime('%b').lower()}{sunday.day}.{sunday.year}"
+
+
+def _extract_days_json(page):
+    k = page.find("days: [")
+    if k < 0:
+        raise ValueError("na stránce chybí data kalendáře")
+    i = page.index("[", k)
+    depth, in_s, esc = 0, False, False
+    for p in range(i, len(page)):
+        c = page[p]
+        if in_s:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_s = False
+            continue
+        if c == '"':
+            in_s = True
+        elif c == "[":
+            depth += 1
+        elif c == "]":
+            depth -= 1
+            if depth == 0:
+                return json.loads(page[i:p + 1])
+    raise ValueError("nedokončená data kalendáře")
+
+
+def fetch_html(url):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/131.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    with urllib.request.urlopen(req, timeout=25) as r:
+        return r.read().decode("utf-8", "ignore")
+
+
+def ff_week_events(monday):
+    """Stáhne týden z forexfactory.com a vrátí události ve formátu parse_calendar (i s Actual)."""
+    page = fetch_html(ff_week_url(monday))
+    raw = []
+    for day in _extract_days_json(page):
+        for e in day.get("events", []):
+            dl = e.get("dateline")
+            if not dl:
+                continue
+            dt = datetime.fromtimestamp(dl, NY_TZ)
+            if not re.search(r"\d:\d\d", e.get("timeLabel") or ""):
+                dt = dt.replace(hour=0, minute=0)  # All Day / Tentative
+            raw.append({
+                "title": e.get("name", ""),
+                "country": e.get("currency", ""),
+                "date": dt.isoformat(),
+                "impact": FF_IMPACT.get((e.get("impactName") or "").lower(), e.get("impactName", "")),
+                "forecast": e.get("forecast", ""),
+                "previous": e.get("previous", ""),
+                "actual": e.get("actual", ""),
+            })
+    return parse_calendar(raw)
+
+
 def event_date(ev):
     """Datum události v místním čase (svátky/celodenní podle data zdroje)."""
     if ev.get("all_day") and ev.get("date"):
@@ -766,14 +840,6 @@ def week_headlines(monday, friday):
     return scored[:45]
 
 
-def extra_calendar(url):
-    try:
-        return parse_calendar(json.loads(fetch(url)))
-    except Exception as e:  # noqa: BLE001
-        log(f"Kalendář {url.rsplit('_', 1)[-1]} nedostupný: {e}")
-        return None
-
-
 def _fmt_cal_for_ai(evs):
     out = []
     for e in evs:
@@ -796,13 +862,18 @@ def weekly_report(st, events, local_now, weeks_back=0):
     news = sorted([w for w in st.get("week_log", []) if t0 <= w["t"] < t1], key=lambda w: -w.get("score", 0))
     agency = week_headlines(monday, friday)
 
-    # Kalendář hodnoceného a příštího týdne (aktuální feed + případně last/next week feed)
-    pool = list(events)
-    this_week_mon = local_now.date() - timedelta(days=local_now.weekday())
-    if monday < this_week_mon:
-        pool += extra_calendar(C.CALENDAR_URL_LASTWEEK) or []
-    if not any(e for e in pool if event_date(e) >= next_monday):
-        pool += extra_calendar(C.CALENDAR_URL_NEXTWEEK) or []
+    # Kalendář hodnoceného a příštího týdne: nejdřív forexfactory.com (má i skutečné hodnoty),
+    # záloha = JSON feed aktuálního týdne
+    pool = []
+    for wk in (monday, next_monday):
+        try:
+            evs = ff_week_events(wk)
+            pool += evs
+            log(f"OK   ForexFactory web {wk}: {len(evs)} událostí")
+        except Exception as e:  # noqa: BLE001
+            log(f"FAIL ForexFactory web {wk}: {type(e).__name__}: {e}")
+    keys = {e["key"] for e in pool}
+    pool += [e for e in events if e["key"] not in keys]
     pool = list({e["key"]: e for e in pool}.values())
     pool.sort(key=lambda e: e["ts"])
     week_events = [e for e in pool if monday <= event_date(e) <= friday]
@@ -1070,6 +1141,12 @@ def run(args):
 
 
 def run_test(st, tg, items, events, local_now):
+    h = st["health"].setdefault("ForexFactory web", {"fails": 0, "alerted": False, "error": "", "count": 0})
+    try:
+        evs = ff_week_events(local_now.date() - timedelta(days=local_now.weekday() + 7))
+        h.update(fails=0, error="", count=len(evs))
+    except Exception as e:  # noqa: BLE001
+        h.update(fails=1, error=f"{type(e).__name__}: {e}"[:200], count=0)
     tg.send("🧪 <b>Test Red News bota</b>\n\n" + health_text(st) + "\n\n" + top_text(items))
     tg.send(daily_summary(events, local_now))
     ev = evening_summary(events, local_now)
