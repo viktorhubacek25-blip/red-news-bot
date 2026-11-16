@@ -9,6 +9,10 @@ on:
         description: "Testovací běh (pošle stav zdrojů + ukázku skórování)"
         type: boolean
         default: true
+      weekly:
+        description: "Poslat týdenní souhrn hned"
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # jen kvůli keepalive commitu (viz poslední krok)
@@ -20,7 +24,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +39,8 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }}
 
       - name: Uložit stav
         if: always()
