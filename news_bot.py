@@ -81,6 +81,8 @@ def load_state(path):
     st.setdefault("reminded", {})
     st.setdefault("summary_date", "")
     st.setdefault("evening_date", "")
+    st.setdefault("weekly_key", "")
+    st.setdefault("week_log", [])
     st.setdefault("calendar", {"fetched_at": 0, "events": []})
     st.setdefault("health", {})
     return st
@@ -91,6 +93,7 @@ def save_state(st, path):
     st["seen"] = {k: v for k, v in st["seen"].items() if t - v < 4 * 86400}
     st["sent"] = [s for s in st["sent"] if t - s["t"] < 2 * 86400][-300:]
     st["reminded"] = {k: v for k, v in st["reminded"].items() if t - v < 8 * 86400}
+    st["week_log"] = [w for w in st.get("week_log", []) if t - w["t"] < 9 * 86400][-500:]
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(st, f, ensure_ascii=False)
@@ -604,6 +607,189 @@ def calendar_tasks(st, events, local_now, tg, silent):
 
 
 # ---------------------------------------------------------------------------
+# Týdenní souhrn
+# ---------------------------------------------------------------------------
+def _closes_yahoo(symbol):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}?range=1mo&interval=1d"
+    data = json.loads(fetch(url, timeout=15))
+    res = data["chart"]["result"][0]
+    ts = res.get("timestamp") or []
+    closes = res["indicators"]["quote"][0].get("close") or []
+    out = [(datetime.fromtimestamp(t, UTC).date(), c) for t, c in zip(ts, closes) if c is not None]
+    if not out:
+        raise ValueError("prázdná data")
+    return out
+
+
+def _closes_stooq(symbol):
+    url = f"https://stooq.com/q/d/l/?s={urllib.parse.quote(symbol)}&i=d"
+    text = fetch(url, timeout=15).decode("utf-8", "ignore").strip().splitlines()
+    out = []
+    for line in text[1:]:
+        parts = line.split(",")
+        if len(parts) >= 5:
+            try:
+                out.append((datetime.fromisoformat(parts[0]).date(), float(parts[4])))
+            except ValueError:
+                continue
+    if not out:
+        raise ValueError("prázdná data")
+    return out[-40:]
+
+
+def weekly_changes(local_now):
+    """Vrátí [(skupina, [(název, poslední, změna, typ) | (název, None, chyba, typ)])]."""
+    monday = local_now.date() - timedelta(days=local_now.weekday())
+    result = []
+    for group, assets in C.MARKETS:
+        rows = []
+        for name, ysym, ssym, kind in assets:
+            closes, err = None, ""
+            for fn, sym in ((_closes_yahoo, ysym), (_closes_stooq, ssym)):
+                if not sym:
+                    continue
+                try:
+                    closes = fn(sym)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    err = f"{type(e).__name__}: {e}"[:80]
+            if not closes:
+                rows.append((name, None, err, kind))
+                continue
+            last_d, last = closes[-1]
+            prev = [c for d, c in closes if d < monday]
+            if not prev:
+                rows.append((name, None, "chybí data za minulý týden", kind))
+                continue
+            ref = prev[-1]
+            if kind == "yield":
+                if last > 20:  # některé zdroje uvádějí výnos ×10
+                    last, ref = last / 10, ref / 10
+                rows.append((name, last, (last - ref) * 100, kind))
+            else:
+                rows.append((name, last, (last / ref - 1) * 100, kind))
+        result.append((group, rows))
+    return result
+
+
+def fmt_change_row(name, last, chg, kind):
+    if last is None:
+        return f"▫️ {html.escape(name)}: <i>data nedostupná</i>"
+    arrow = "🟢 ▲" if chg > 0.005 else ("🔴 ▼" if chg < -0.005 else "⚪ ►")
+    if kind == "yield":
+        return f"{arrow} {html.escape(name)}: <b>{last:.2f} %</b> ({chg:+.0f} bp)"
+    val = f"{last:,.4f}" if last < 10 else f"{last:,.2f}"
+    return f"{arrow} {html.escape(name)}: <b>{val.replace(',', ' ')}</b> ({chg:+.2f} %)"
+
+
+def _md_to_html(text):
+    """Minimalistický převod **tučně** z AI textu do Telegram HTML."""
+    t = html.escape(text)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"^#+\s*(.+)$", r"<b>\1</b>", t, flags=re.M)
+    return t
+
+
+def call_claude(prompt, max_tokens=1800):
+    key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not key:
+        return None
+    body = json.dumps({
+        "model": getattr(C, "WEEKLY_AI_MODEL", "claude-sonnet-5-5"),
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            data = json.loads(r.read())
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip() or None
+    except urllib.error.HTTPError as e:
+        log(f"Claude API chyba {e.code}: {e.read().decode(errors='ignore')[:300]}")
+    except Exception as e:  # noqa: BLE001
+        log(f"Claude API chyba: {e}")
+    return None
+
+
+def weekly_report(st, events, local_now):
+    monday = local_now.date() - timedelta(days=local_now.weekday())
+    friday = monday + timedelta(days=4)
+    changes = weekly_changes(local_now)
+    t0 = datetime.combine(monday, datetime.min.time(), TZ).timestamp()
+    news = sorted([w for w in st.get("week_log", []) if w["t"] >= t0], key=lambda w: -w.get("score", 0))
+
+    head = f"📊 <b>Týden {monday.day}. {monday.month}. – {friday.day}. {friday.month}. v kostce</b>"
+    lines = [head]
+    for group, rows in changes:
+        lines += ["", f"<b>{group}</b>"] + [fmt_change_row(*r) for r in rows]
+
+    # Podklady pro AI
+    price_txt = "\n".join(
+        f"{group}: " + "; ".join(
+            f"{n} {('n/a' if l is None else (f'{l:.2f} % ({c:+.0f} bp)' if k == 'yield' else f'{l:.4g} ({c:+.2f} %)'))}"
+            for n, l, c, k in rows)
+        for group, rows in changes)
+    news_txt = "\n".join(
+        f"- [{datetime.fromtimestamp(w['t'], TZ).strftime('%a %H:%M')}] {w['title']} ({w.get('pub', '')}; "
+        f"štítky: {', '.join(w.get('tags', [])) or '-'})"
+        for w in news[:60]) or "(žádné zprávy nezaznamenány)"
+    week_events = [e for e in events if monday <= event_date(e) <= friday]
+    cal_txt = "\n".join(
+        f"- {event_date(e).strftime('%a')} {e['country']} {e['title']}"
+        + (" (svátek)" if e.get("holiday") else f" (odhad {e.get('forecast') or '-'}, předch. {e.get('previous') or '-'})")
+        for e in week_events) or "(žádné)"
+
+    prompt = (
+        "Jsi zkušený makro/FX analytik. Napiš česky stručné týdenní shrnutí trhů pro tradera, "
+        "který sleduje dolar, indexy a komodity. Vycházej z týdenních změn cen, z důležitých zpráv týdne "
+        "a z červených událostí kalendáře níže. Pro každou skupinu (💵 Dolar, 📈 Indexy, 🛢 Komodity) napiš "
+        "2–4 věty: co se pohnulo, které konkrétní zprávy to nejspíš způsobily a co znamenají pro dané aktivum "
+        "(mechanismus, např. jestřábí Fed → vyšší výnosy → silnější dolar). Pak 1–2 věty 'Na co si dát pozor "
+        "příští týden'. Nevymýšlej zprávy, které v seznamu nejsou; když souvislost není jasná, napiš to. "
+        "Žádné investiční doporučení. Formát: nadpis skupiny na samostatném řádku tučně (**…**), pak text. "
+        "Max. ~1800 znaků.\n\n"
+        f"TÝDENNÍ ZMĚNY (pátek vs. předchozí pátek):\n{price_txt}\n\n"
+        f"DŮLEŽITÉ ZPRÁVY TÝDNE (seřazené podle důležitosti):\n{news_txt}\n\n"
+        f"ČERVENÉ UDÁLOSTI KALENDÁŘE:\n{cal_txt}\n"
+    )
+    ai = call_claude(prompt)
+    if ai:
+        lines += ["", "🧠 <b>Co za tím bylo</b>", _md_to_html(ai)]
+    else:
+        lines += ["", "📰 <b>Hlavní zprávy týdne</b>"]
+        any_news = False
+        for group, _ in changes:
+            emoji = group.split(" ", 1)[0]
+            items = [w for w in news if any(tg.split(" ", 1)[0] == emoji for tg in w.get("tags", []))][:3]
+            if items:
+                any_news = True
+                lines.append(f"<b>{group}</b>")
+                for w in items:
+                    lnk = html.escape(w.get("link", ""), quote=True)
+                    txt = html.escape(w.get("cz") or w["title"])
+                    lines.append(f'• <a href="{lnk}">{txt}</a>' if lnk else f"• {txt}")
+        if not any_news:
+            lines.append("Tento týden zatím žádné zaznamenané zprávy.")
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            lines.append("\n<i>Tip: s API klíčem Claude (ANTHROPIC_API_KEY v GitHub Secrets) sem přibude "
+                         "vysvětlení, co zprávy znamenaly pro jednotlivá aktiva.</i>")
+    lines.append("\n<i>Není investiční doporučení.</i>")
+    return "\n".join(lines)
+
+
+def weekly_due(st, local_now):
+    if not getattr(C, "WEEKLY_REPORT", False):
+        return False, ""
+    key = f"{local_now.isocalendar()[0]}-W{local_now.isocalendar()[1]}"
+    return (local_now.weekday() == C.WEEKLY_REPORT_WEEKDAY and local_now.hour >= C.WEEKLY_REPORT_HOUR
+            and st.get("weekly_key") != key), key
+
+
+# ---------------------------------------------------------------------------
 # Hlavní běh
 # ---------------------------------------------------------------------------
 def select_alerts(st, items, active_events):
@@ -646,6 +832,12 @@ def run(args):
     events, _ = refresh_calendar(st, force=args.test)
     items = collect_items(st, health_alerts)
 
+    if getattr(args, "weekly", False):
+        tg.send(weekly_report(st, events, local_now))
+        if not args.test:
+            save_state(st, args.state)
+            return
+
     if args.test:
         run_test(st, tg, items, events, local_now)
         save_state(st, args.state)
@@ -680,9 +872,17 @@ def run(args):
         t = time.time()
         for score, it in picked:
             st["sent"].append({"t": t, "tok": sorted(tokens(it["title"])), "title": it["title"]})
+            st["week_log"].append({
+                "t": t, "title": it["title"], "cz": translate(it["title"]), "pub": it["publisher"],
+                "score": score, "tags": asset_tags(it["title"]), "link": it.get("link", ""),
+            })
 
     for msg in health_alerts:
         tg.send(msg, silent=True)
+
+    due, wkey = weekly_due(st, local_now)
+    if due and tg.send(weekly_report(st, events, local_now), silent=silent):
+        st["weekly_key"] = wkey
 
     save_state(st, args.state)
     log(f"Hotovo: {len(items)} položek, posláno {len(picked)}.")
@@ -721,6 +921,7 @@ def main():
     ap = argparse.ArgumentParser(description="Red News Telegram bot")
     ap.add_argument("--test", action="store_true", help="pošle testovací zprávu a stav zdrojů")
     ap.add_argument("--dry-run", action="store_true", help="nic neposílá, jen vypíše")
+    ap.add_argument("--weekly", action="store_true", help="pošle týdenní souhrn hned")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 
