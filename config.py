@@ -33,6 +33,12 @@ QUIET_HOURS = None
 # Zobrazovat náhled odkazu pod zprávou?
 LINK_PREVIEW = False
 
+# Překlad headlinů (bezplatný Google Translate, záloha MyMemory).
+# None = posílat anglicky. Při chybě překladu se pošle originál.
+TRANSLATE_TO = "cs"
+# Přidat pod český překlad i původní anglický titulek (malým písmem)?
+SHOW_ORIGINAL = False
+
 # ---------------------------------------------------------------------------
 # ZDROJE HEADLINŮ
 # trust = bonus ke skóre za důvěryhodnost zdroje
@@ -171,8 +177,13 @@ CALENDAR_IMPACTS = ["High"]
 # Události, které chceš vždy, i když nejsou červené (regex na název)
 CALENDAR_ALWAYS = [r"Crude Oil Inventories", r"OPEC"]
 
+# Svátky / bank holidays (banky zavřené = nižší likvidita) – pro tyto měny
+HOLIDAY_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CNY", "CHF", "CAD", "AUD"]
+
 # Ranní přehled dne (místní čas). None = vypnuto.
 DAILY_SUMMARY_HOUR = 7
+# Večerní přehled – události na zítřek (místní čas). None = vypnuto.
+EVENING_SUMMARY_HOUR = 20
 # V pondělí přidat do ranního přehledu výhled celého týdne
 WEEKLY_OUTLOOK_ON_MONDAY = True
 
