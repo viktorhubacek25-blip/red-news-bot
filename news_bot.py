@@ -637,9 +637,10 @@ def _closes_stooq(symbol):
     return out[-40:]
 
 
-def weekly_changes(local_now):
+def weekly_changes(local_now, weeks_back=0):
     """Vrátí [(skupina, [(název, poslední, změna, typ) | (název, None, chyba, typ)])]."""
-    monday = local_now.date() - timedelta(days=local_now.weekday())
+    monday = local_now.date() - timedelta(days=local_now.weekday() + 7 * weeks_back)
+    friday = monday + timedelta(days=4)
     result = []
     for group, assets in C.MARKETS:
         rows = []
@@ -656,7 +657,11 @@ def weekly_changes(local_now):
             if not closes:
                 rows.append((name, None, err, kind))
                 continue
-            last_d, last = closes[-1]
+            upto = [(d, c) for d, c in closes if d <= friday]
+            if not upto:
+                rows.append((name, None, "chybí data", kind))
+                continue
+            last_d, last = upto[-1]
             prev = [c for d, c in closes if d < monday]
             if not prev:
                 rows.append((name, None, "chybí data za minulý týden", kind))
@@ -715,12 +720,13 @@ def call_claude(prompt, max_tokens=1800):
     return None
 
 
-def weekly_report(st, events, local_now):
-    monday = local_now.date() - timedelta(days=local_now.weekday())
+def weekly_report(st, events, local_now, weeks_back=0):
+    monday = local_now.date() - timedelta(days=local_now.weekday() + 7 * weeks_back)
     friday = monday + timedelta(days=4)
-    changes = weekly_changes(local_now)
+    changes = weekly_changes(local_now, weeks_back)
     t0 = datetime.combine(monday, datetime.min.time(), TZ).timestamp()
-    news = sorted([w for w in st.get("week_log", []) if w["t"] >= t0], key=lambda w: -w.get("score", 0))
+    t1 = t0 + 7 * 86400
+    news = sorted([w for w in st.get("week_log", []) if t0 <= w["t"] < t1], key=lambda w: -w.get("score", 0))
 
     head = f"📊 <b>Týden {monday.day}. {monday.month}. – {friday.day}. {friday.month}. v kostce</b>"
     lines = [head]
@@ -833,7 +839,7 @@ def run(args):
     items = collect_items(st, health_alerts)
 
     if getattr(args, "weekly", False):
-        tg.send(weekly_report(st, events, local_now))
+        tg.send(weekly_report(st, events, local_now, getattr(args, "weeks_back", 0)))
         if not args.test:
             save_state(st, args.state)
             return
@@ -922,6 +928,7 @@ def main():
     ap.add_argument("--test", action="store_true", help="pošle testovací zprávu a stav zdrojů")
     ap.add_argument("--dry-run", action="store_true", help="nic neposílá, jen vypíše")
     ap.add_argument("--weekly", action="store_true", help="pošle týdenní souhrn hned")
+    ap.add_argument("--weeks-back", type=int, default=0, help="souhrn za N týdnů zpět (1 = minulý týden)")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 
