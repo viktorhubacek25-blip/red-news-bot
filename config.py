@@ -218,8 +218,6 @@ WEEKLY_NEWS_QUERIES = [
     '(oil OR crude OR OPEC OR gold OR Brent OR copper OR "natural gas")',
     '(tariffs OR sanctions OR "Treasury yields" OR dollar OR "Wall Street" OR stocks)',
 ]
-CALENDAR_URL_LASTWEEK = "https://nfs.faireconomy.media/ff_calendar_lastweek.json"
-CALENDAR_URL_NEXTWEEK = "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
 
 # Sledovaná aktiva: (skupina, [(název, Yahoo symbol, Stooq symbol, typ)])
 # typ "price" = změna v %, "yield" = výnos, změna v bazických bodech
