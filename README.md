@@ -2,8 +2,8 @@
 
 Posílá do Telegramu **jen zprávy s velkým dopadem** na dolar, indexy a komodity:
 
-- **Breaking headliny** (Fed, CPI, NFP, OPEC, cla, geopolitika…) z FinancialJuice, investingLive, Fedu, ECB a z Google News filtrovaného na Reuters, Bloomberg, WSJ, FT, CNBC a AP. Každá zpráva dostane skóre a pošle se jen nad prahem.
-- **Ranní přehled** červených událostí z kalendáře ForexFactory (v pondělí i výhled na týden).
+- **Breaking headliny** (Fed, CPI, NFP, OPEC, cla, geopolitika…) z FinancialJuice, investingLive, Fedu, ECB a z Google News filtrovaného na Reuters, Bloomberg, WSJ, FT, CNBC a AP. Každá zpráva dostane skóre a pošle se jen nad prahem. Titulky chodí **přeložené do češtiny**, se zdrojem a odkazem na originál.
+- **Ranní přehled** (7:00) červených událostí na dnešek a **večerní přehled** (20:00) na zítřek z kalendáře ForexFactory, včetně 🏦 **bank holidays** hlavních měn. V pondělí ráno a v neděli večer navíc výhled na celý týden.
 - **Upozornění 15 minut** před každou červenou událostí.
 - Duplikáty z různých zdrojů se slučují. Když toho přijde hodně najednou, dostaneš jednu souhrnnou zprávu.
 
@@ -57,6 +57,10 @@ Na GitHubu otevři `config.py`, klikni na ✏️, uprav a dej **Commit**. Dalš�
 | `CALENDAR_CURRENCIES` | Měny pro kalendář (výchozí USD, EUR, JPY, CNY). |
 | `CALENDAR_ALWAYS` | Události, které chceš vždy, i když nejsou červené (výchozí ropné zásoby, OPEC). |
 | `DAILY_SUMMARY_HOUR = 7` | Kdy přijde ranní přehled (`None` = vypnout). |
+| `EVENING_SUMMARY_HOUR = 20` | Kdy přijde večerní přehled na zítřek (`None` = vypnout). |
+| `HOLIDAY_CURRENCIES` | Měny, u kterých hlásit svátky (bank holidays). |
+| `TRANSLATE_TO = "cs"` | Jazyk překladu titulků (`None` = posílat anglicky). |
+| `SHOW_ORIGINAL = False` | `True` = pod českým překladem i původní anglický titulek. |
 | `REMIND_MINUTES_BEFORE = 15` | Kolik minut předem upozornit. |
 | `QUIET_HOURS = None` | Např. `(0, 7)` = od půlnoci do 7:00 chodí zprávy potichu. |
 | `MUST_SEND`, `KEYWORD_GROUPS`, `NEGATIVE_PATTERNS` | Klíčová slova a jejich váhy. |
