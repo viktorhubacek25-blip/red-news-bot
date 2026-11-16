@@ -192,6 +192,8 @@ def collect_items(st, alerts_out):
     all_items = []
     for src in C.SOURCES:
         h = st["health"].setdefault(src["name"], {"fails": 0, "alerted": False, "error": "", "count": 0})
+        if src.get("google"):
+            time.sleep(1.5)  # Google News při rychlých dotazech vrací 429
         try:
             items = parse_feed(fetch(src["url"]), src)
             all_items.extend(items)
@@ -354,6 +356,21 @@ class Telegram:
         return True
 
 
+    def api(self, method, payload=None):
+        """Obecné volání Telegram Bot API (vrací 'result' nebo None)."""
+        if self.dry:
+            return getattr(self, "fake_" + method, None)
+        url = f"https://api.telegram.org/bot{self.token}/{method}"
+        body = json.dumps(payload or {}).encode()
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read()).get("result")
+        except Exception as e:  # noqa: BLE001
+            log(f"Telegram {method} chyba: {e}")
+            return None
+
+
 def split_message(text, limit=3900):
     if len(text) <= limit:
         return [text]
@@ -459,42 +476,7 @@ def refresh_calendar(st, force=False):
         return cal["events"], True
     h = st["health"].setdefault("Kalendář (ForexFactory)", {"fails": 0, "alerted": False, "error": "", "count": 0})
     try:
-        data = json.loads(fetch(C.CALENDAR_URL))
-        events = []
-        for e in data:
-            title = e.get("title", "")
-            cur = e.get("country", "")
-            holiday = e.get("impact") == "Holiday"
-            if holiday:
-                if cur not in getattr(C, "HOLIDAY_CURRENCIES", []):
-                    continue
-            else:
-                always = any(r.search(title) for r in CAL_ALWAYS_RE)
-                if not always and (e.get("impact") not in C.CALENDAR_IMPACTS or cur not in C.CALENDAR_CURRENCIES):
-                    continue
-                if always and cur not in C.CALENDAR_CURRENCIES and cur != "ALL":
-                    continue
-            try:
-                dt = datetime.fromisoformat(e["date"])
-            except (KeyError, ValueError):
-                continue
-            events.append(
-                {
-                    "key": f"{cur}|{title}|{e['date']}",
-                    "title": title,
-                    "country": cur,
-                    "ts": dt.astimezone(UTC).timestamp(),
-                    # 00:00 v čase zdroje = "celý den / tentative"
-                    "all_day": holiday or (dt.hour == 0 and dt.minute == 0),
-                    "holiday": holiday,
-                    # datum události v čase zdroje (svátky platí celý den daného data)
-                    "date": dt.date().isoformat(),
-                    "impact": e.get("impact", ""),
-                    "forecast": e.get("forecast", ""),
-                    "previous": e.get("previous", ""),
-                }
-            )
-        events.sort(key=lambda x: x["ts"])
+        events = parse_calendar(json.loads(fetch(C.CALENDAR_URL)))
         cal.update(fetched_at=time.time(), events=events)
         h.update(fails=0, error="", count=len(events))
         log(f"OK   Kalendář: {len(events)} sledovaných událostí")
@@ -506,6 +488,47 @@ def refresh_calendar(st, force=False):
         cal["fetched_at"] = time.time() - (C.CALENDAR_REFRESH_MINUTES - 10) * 60
         log(f"FAIL Kalendář: {h['error']}")
         return cal["events"], False
+
+
+def parse_calendar(data):
+    """Z ForexFactory JSON vybere sledované červené události a svátky."""
+    events = []
+    for e in data:
+        title = e.get("title", "")
+        cur = e.get("country", "")
+        holiday = e.get("impact") == "Holiday"
+        if holiday:
+            if cur not in getattr(C, "HOLIDAY_CURRENCIES", []):
+                continue
+        else:
+            always = any(r.search(title) for r in CAL_ALWAYS_RE)
+            if not always and (e.get("impact") not in C.CALENDAR_IMPACTS or cur not in C.CALENDAR_CURRENCIES):
+                continue
+            if always and cur not in C.CALENDAR_CURRENCIES and cur != "ALL":
+                continue
+        try:
+            dt = datetime.fromisoformat(e["date"])
+        except (KeyError, ValueError):
+            continue
+        events.append(
+            {
+                "key": f"{cur}|{title}|{e['date']}",
+                "title": title,
+                "country": cur,
+                "ts": dt.astimezone(UTC).timestamp(),
+                # 00:00 v čase zdroje = "celý den / tentative"
+                "all_day": holiday or (dt.hour == 0 and dt.minute == 0),
+                "holiday": holiday,
+                # datum události v čase zdroje (svátky platí celý den daného data)
+                "date": dt.date().isoformat(),
+                "impact": e.get("impact", ""),
+                "forecast": e.get("forecast", ""),
+                "previous": e.get("previous", ""),
+                "actual": e.get("actual", ""),
+            }
+        )
+    events.sort(key=lambda x: x["ts"])
+    return events
 
 
 def event_date(ev):
@@ -720,13 +743,70 @@ def call_claude(prompt, max_tokens=1800):
     return None
 
 
+def week_headlines(monday, friday):
+    """Titulky top agentur za daný týden z Google News (after/before)."""
+    items = []
+    for q in getattr(C, "WEEKLY_NEWS_QUERIES", []):
+        url = C.gnews_range(q, monday.isoformat(), (friday + timedelta(days=1)).isoformat())
+        try:
+            time.sleep(1.5)
+            items += parse_feed(fetch(url), {"name": "Google News", "trust": 0, "google": True})
+        except Exception as e:  # noqa: BLE001
+            log(f"FAIL týdenní titulky: {e}")
+    scored, toks = [], []
+    for it in sorted(items, key=lambda x: -score_item(x, [])[0]):
+        sc = score_item(it, [])[0]
+        if sc < 5:
+            continue
+        tk = tokens(it["title"])
+        if any(similarity(tk, t) >= C.DUPLICATE_SIMILARITY for t in toks):
+            continue
+        toks.append(tk)
+        scored.append((sc, it))
+    return scored[:45]
+
+
+def extra_calendar(url):
+    try:
+        return parse_calendar(json.loads(fetch(url)))
+    except Exception as e:  # noqa: BLE001
+        log(f"Kalendář {url.rsplit('_', 1)[-1]} nedostupný: {e}")
+        return None
+
+
+def _fmt_cal_for_ai(evs):
+    out = []
+    for e in evs:
+        if e.get("holiday"):
+            out.append(f"- {event_date(e).strftime('%a %d.%m.')} {e['country']} {e['title']} (svátek)")
+        else:
+            act = f", skutečnost {e['actual']}" if e.get("actual") else ""
+            out.append(f"- {event_date(e).strftime('%a %d.%m.')} {e['country']} {e['title']} "
+                       f"(odhad {e.get('forecast') or '-'}, předch. {e.get('previous') or '-'}{act})")
+    return "\n".join(out)
+
+
 def weekly_report(st, events, local_now, weeks_back=0):
     monday = local_now.date() - timedelta(days=local_now.weekday() + 7 * weeks_back)
     friday = monday + timedelta(days=4)
+    next_monday = monday + timedelta(days=7)
     changes = weekly_changes(local_now, weeks_back)
     t0 = datetime.combine(monday, datetime.min.time(), TZ).timestamp()
     t1 = t0 + 7 * 86400
     news = sorted([w for w in st.get("week_log", []) if t0 <= w["t"] < t1], key=lambda w: -w.get("score", 0))
+    agency = week_headlines(monday, friday)
+
+    # Kalendář hodnoceného a příštího týdne (aktuální feed + případně last/next week feed)
+    pool = list(events)
+    this_week_mon = local_now.date() - timedelta(days=local_now.weekday())
+    if monday < this_week_mon:
+        pool += extra_calendar(C.CALENDAR_URL_LASTWEEK) or []
+    if not any(e for e in pool if event_date(e) >= next_monday):
+        pool += extra_calendar(C.CALENDAR_URL_NEXTWEEK) or []
+    pool = list({e["key"]: e for e in pool}.values())
+    pool.sort(key=lambda e: e["ts"])
+    week_events = [e for e in pool if monday <= event_date(e) <= friday]
+    next_events = [e for e in pool if next_monday <= event_date(e) <= next_monday + timedelta(days=4)]
 
     head = f"📊 <b>Týden {monday.day}. {monday.month}. – {friday.day}. {friday.month}. v kostce</b>"
     lines = [head]
@@ -739,47 +819,55 @@ def weekly_report(st, events, local_now, weeks_back=0):
             f"{n} {('n/a' if l is None else (f'{l:.2f} % ({c:+.0f} bp)' if k == 'yield' else f'{l:.4g} ({c:+.2f} %)'))}"
             for n, l, c, k in rows)
         for group, rows in changes)
-    news_txt = "\n".join(
-        f"- [{datetime.fromtimestamp(w['t'], TZ).strftime('%a %H:%M')}] {w['title']} ({w.get('pub', '')}; "
-        f"štítky: {', '.join(w.get('tags', [])) or '-'})"
-        for w in news[:60]) or "(žádné zprávy nezaznamenány)"
-    week_events = [e for e in events if monday <= event_date(e) <= friday]
-    cal_txt = "\n".join(
-        f"- {event_date(e).strftime('%a')} {e['country']} {e['title']}"
-        + (" (svátek)" if e.get("holiday") else f" (odhad {e.get('forecast') or '-'}, předch. {e.get('previous') or '-'})")
-        for e in week_events) or "(žádné)"
+    bot_txt = "\n".join(
+        f"- [{datetime.fromtimestamp(w['t'], TZ).strftime('%a %H:%M')}] {w['title']} ({w.get('pub', '')})"
+        for w in news[:40]) or "(bot v tomto týdnu ještě nic nezachytil)"
+    ag_txt = "\n".join(
+        f"- [{datetime.fromtimestamp(it['published'], TZ).strftime('%a %d.%m.') if it.get('published') else '?'}] "
+        f"{it['title']} ({it.get('publisher', '')})"
+        for sc, it in agency) or "(nedostupné)"
+    cal_txt = _fmt_cal_for_ai(week_events) or "(kalendář tohoto týdne není k dispozici)"
+    next_txt = (_fmt_cal_for_ai(next_events) if next_events else
+                "(kalendář příštího týdne zatím NENÍ k dispozici – netvrď, že žádné události nebudou; "
+                "zmiň jen obecně, co je dobré sledovat)")
 
     prompt = (
         "Jsi zkušený makro/FX analytik. Napiš česky stručné týdenní shrnutí trhů pro tradera, "
-        "který sleduje dolar, indexy a komodity. Vycházej z týdenních změn cen, z důležitých zpráv týdne "
-        "a z červených událostí kalendáře níže. Pro každou skupinu (💵 Dolar, 📈 Indexy, 🛢 Komodity) napiš "
-        "2–4 věty: co se pohnulo, které konkrétní zprávy to nejspíš způsobily a co znamenají pro dané aktivum "
-        "(mechanismus, např. jestřábí Fed → vyšší výnosy → silnější dolar). Pak 1–2 věty 'Na co si dát pozor "
-        "příští týden'. Nevymýšlej zprávy, které v seznamu nejsou; když souvislost není jasná, napiš to. "
-        "Žádné investiční doporučení. Formát: nadpis skupiny na samostatném řádku tučně (**…**), pak text. "
-        "Max. ~1800 znaků.\n\n"
+        "který sleduje dolar, indexy a komodity. Vycházej z týdenních změn cen, ze zpráv a z kalendáře níže. "
+        "Pro každou skupinu (💵 Dolar, 📈 Indexy, 🛢 Komodity) napiš 2–4 věty: co se pohnulo, které konkrétní "
+        "zprávy nebo data (např. CPI, PPI, Fed) to nejspíš způsobily – u dat uveď skutečnost vs. odhad, pokud ji "
+        "zprávy obsahují – a co to znamená pro dané aktivum (mechanismus, např. vyšší inflace → jestřábí Fed → "
+        "vyšší výnosy → silnější dolar). Pak 1–3 věty 'Na co si dát pozor příští týden'. Opírej se jen o uvedené "
+        "zprávy a data; když souvislost není jasná, napiš to. Žádné investiční doporučení. Formát: nadpis "
+        "skupiny na samostatném řádku tučně (**…**), pak text. Max. ~2000 znaků.\n\n"
         f"TÝDENNÍ ZMĚNY (pátek vs. předchozí pátek):\n{price_txt}\n\n"
-        f"DŮLEŽITÉ ZPRÁVY TÝDNE (seřazené podle důležitosti):\n{news_txt}\n\n"
-        f"ČERVENÉ UDÁLOSTI KALENDÁŘE:\n{cal_txt}\n"
+        f"ČERVENÉ UDÁLOSTI HODNOCENÉHO TÝDNE:\n{cal_txt}\n\n"
+        f"ZPRÁVY, KTERÉ BOT POSLAL BĚHEM TÝDNE (squawk, často s výsledky dat):\n{bot_txt}\n\n"
+        f"TITULKY TOP AGENTUR ZA TÝDEN (Reuters, Bloomberg, WSJ, FT, CNBC, AP):\n{ag_txt}\n\n"
+        f"ČERVENÉ UDÁLOSTI PŘÍŠTÍHO TÝDNE:\n{next_txt}\n"
     )
     ai = call_claude(prompt)
     if ai:
         lines += ["", "🧠 <b>Co za tím bylo</b>", _md_to_html(ai)]
     else:
         lines += ["", "📰 <b>Hlavní zprávy týdne</b>"]
+        pool_news = [{"title": w["title"], "cz": w.get("cz"), "link": w.get("link", ""),
+                      "tags": w.get("tags", [])} for w in news]
+        pool_news += [{"title": it["title"], "cz": None, "link": it.get("link", ""),
+                       "tags": asset_tags(it["title"])} for sc, it in agency]
         any_news = False
         for group, _ in changes:
             emoji = group.split(" ", 1)[0]
-            items = [w for w in news if any(tg.split(" ", 1)[0] == emoji for tg in w.get("tags", []))][:3]
+            items = [w for w in pool_news if any(tg.split(" ", 1)[0] == emoji for tg in w.get("tags", []))][:3]
             if items:
                 any_news = True
                 lines.append(f"<b>{group}</b>")
                 for w in items:
                     lnk = html.escape(w.get("link", ""), quote=True)
-                    txt = html.escape(w.get("cz") or w["title"])
+                    txt = html.escape(w.get("cz") or translate(w["title"]))
                     lines.append(f'• <a href="{lnk}">{txt}</a>' if lnk else f"• {txt}")
         if not any_news:
-            lines.append("Tento týden zatím žádné zaznamenané zprávy.")
+            lines.append("Žádné zaznamenané zprávy.")
         if not os.environ.get("ANTHROPIC_API_KEY"):
             lines.append("\n<i>Tip: s API klíčem Claude (ANTHROPIC_API_KEY v GitHub Secrets) sem přibude "
                          "vysvětlení, co zprávy znamenaly pro jednotlivá aktiva.</i>")
@@ -793,6 +881,91 @@ def weekly_due(st, local_now):
     key = f"{local_now.isocalendar()[0]}-W{local_now.isocalendar()[1]}"
     return (local_now.weekday() == C.WEEKLY_REPORT_WEEKDAY and local_now.hour >= C.WEEKLY_REPORT_HOUR
             and st.get("weekly_key") != key), key
+
+
+# ---------------------------------------------------------------------------
+# Příkazy z Telegramu (/dnes, /zitra, /tyden, /minuly, /top, /stav)
+# ---------------------------------------------------------------------------
+COMMANDS = [
+    ("dnes", "Dnešní červené události a svátky"),
+    ("zitra", "Zítřejší červené události a svátky"),
+    ("tyden", "Souhrn tohoto týdne (ceny + komentář)"),
+    ("minuly", "Souhrn minulého týdne"),
+    ("top", "Nejdůležitější headliny posledních hodin"),
+    ("stav", "Stav zdrojů bota"),
+    ("pomoc", "Seznam příkazů"),
+]
+
+
+def help_text():
+    lines = ["🤖 <b>Příkazy</b> (odpověď do ~5 min):"]
+    lines += [f"/{c} – {d}" for c, d in COMMANDS]
+    return "\n".join(lines)
+
+
+def health_text(st):
+    lines = ["<b>Zdroje:</b>"]
+    for name, h in st["health"].items():
+        if h.get("fails"):
+            lines.append(f"❌ {html.escape(name)} – <code>{html.escape(h.get('error', ''))}</code>")
+        else:
+            lines.append(f"✅ {html.escape(name)} – {h.get('count', 0)} položek")
+    return "\n".join(lines)
+
+
+def top_text(items, limit=10):
+    t = time.time()
+    fresh = [it for it in items if not it.get("published") or t - it["published"] <= C.MAX_AGE_HOURS * 3600]
+    scored = sorted(((score_item(it, [])[0], it) for it in fresh), key=lambda x: -x[0])
+    uniq, seen = [], set()
+    for sc, it in scored:
+        if it["title"] not in seen:
+            uniq.append((sc, it))
+            seen.add(it["title"])
+    lines = [f"<b>Top headliny za posledních {C.MAX_AGE_HOURS} h</b> (práh {C.SCORE_THRESHOLD}):"]
+    for sc, it in uniq[:limit]:
+        mark = "✅" if sc >= C.SCORE_THRESHOLD else "▫️"
+        lines.append(f"{mark} [{sc if sc < 99 else 'MAX'}] {html.escape(it['title'])} <i>({html.escape(it['publisher'])})</i>")
+    if not uniq:
+        lines.append("— nic čerstvého —")
+    return "\n".join(lines)
+
+
+def handle_commands(st, tg, events, items, local_now):
+    # Jednou zaregistruj menu příkazů v Telegramu
+    if st.get("commands_v") != 1:
+        if tg.api("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in COMMANDS]}) is not None:
+            st["commands_v"] = 1
+    updates = tg.api("getUpdates", {"offset": st.get("tg_offset", 0), "timeout": 0,
+                                    "allowed_updates": ["message"]}) or []
+    for u in updates:
+        st["tg_offset"] = max(st.get("tg_offset", 0), u.get("update_id", 0) + 1)
+        msg = u.get("message") or {}
+        if str((msg.get("chat") or {}).get("id")) != str(tg.chat):
+            continue  # odpovídáme jen tobě
+        text = (msg.get("text") or "").strip()
+        if not text:
+            continue
+        cmd = text.split()[0].lower().lstrip("/").split("@")[0]
+        cmd = {"kalendar": "dnes", "kalendář": "dnes", "zítra": "zitra", "týden": "tyden", "minulý": "minuly",
+               "help": "pomoc", "start": "pomoc"}.get(cmd, cmd)
+        log(f"CMD  {cmd}")
+        if cmd == "dnes":
+            tg.send(day_summary(events, local_now.date(), "dnes"))
+        elif cmd == "zitra":
+            tg.send(day_summary(events, local_now.date() + timedelta(days=1), "zítra"))
+        elif cmd == "tyden":
+            tg.send("⏳ Připravuji souhrn tohoto týdne…")
+            tg.send(weekly_report(st, events, local_now, 0))
+        elif cmd == "minuly":
+            tg.send("⏳ Připravuji souhrn minulého týdne…")
+            tg.send(weekly_report(st, events, local_now, 1))
+        elif cmd == "top":
+            tg.send(top_text(items))
+        elif cmd == "stav":
+            tg.send(health_text(st))
+        else:
+            tg.send(("Tomu nerozumím. " if cmd != "pomoc" else "") + help_text())
 
 
 # ---------------------------------------------------------------------------
@@ -849,6 +1022,8 @@ def run(args):
         save_state(st, args.state)
         return
 
+    handle_commands(st, tg, events, items, local_now)
+
     # První spuštění: jen si zapamatuj aktuální zprávy, ať nepřijde lavina starých
     if not st["initialized"]:
         for it in items:
@@ -895,32 +1070,12 @@ def run(args):
 
 
 def run_test(st, tg, items, events, local_now):
-    lines = ["🧪 <b>Test Red News bota</b>", "", "<b>Zdroje:</b>"]
-    for name, h in st["health"].items():
-        if h.get("fails"):
-            lines.append(f"❌ {html.escape(name)} – <code>{html.escape(h.get('error', ''))}</code>")
-        else:
-            lines.append(f"✅ {html.escape(name)} – {h.get('count', 0)} položek")
-    # Ukázka skórování – co by teď prošlo
-    t = time.time()
-    fresh = [it for it in items if not it.get("published") or t - it["published"] <= C.MAX_AGE_HOURS * 3600]
-    scored = sorted(((score_item(it, [])[0], it) for it in fresh), key=lambda x: -x[0])
-    uniq, seen_titles = [], set()
-    for s, it in scored:
-        if it["title"] not in seen_titles:
-            uniq.append((s, it))
-            seen_titles.add(it["title"])
-    lines += ["", f"<b>Top headliny za posledních {C.MAX_AGE_HOURS} h</b> (práh {C.SCORE_THRESHOLD}):"]
-    for s, it in uniq[:10]:
-        mark = "✅" if s >= C.SCORE_THRESHOLD else "▫️"
-        lines.append(f"{mark} [{s if s < 99 else 'MAX'}] {html.escape(it['title'])} <i>({html.escape(it['publisher'])})</i>")
-    if not uniq:
-        lines.append("— nic čerstvého —")
-    tg.send("\n".join(lines))
+    tg.send("🧪 <b>Test Red News bota</b>\n\n" + health_text(st) + "\n\n" + top_text(items))
     tg.send(daily_summary(events, local_now))
     ev = evening_summary(events, local_now)
     if ev:
         tg.send(ev)
+    tg.send(help_text())
 
 
 def main():
