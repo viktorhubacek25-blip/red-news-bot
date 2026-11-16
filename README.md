@@ -5,6 +5,7 @@ Posílá do Telegramu **jen zprávy s velkým dopadem** na dolar, indexy a komod
 - **Breaking headliny** (Fed, CPI, NFP, OPEC, cla, geopolitika…) z FinancialJuice, investingLive, Fedu, ECB a z Google News filtrovaného na Reuters, Bloomberg, WSJ, FT, CNBC a AP. Každá zpráva dostane skóre a pošle se jen nad prahem. Titulky chodí **přeložené do češtiny**, se zdrojem a odkazem na originál.
 - **Ranní přehled** (7:00) červených událostí na dnešek a **večerní přehled** (20:00) na zítřek z kalendáře ForexFactory, včetně 🏦 **bank holidays** hlavních měn. V pondělí ráno a v neděli večer navíc výhled na celý týden.
 - **Upozornění 15 minut** před každou červenou událostí.
+- **📊 Sobotní souhrn týdne** (9:00): kolik připsaly nebo odepsaly dolar (DXY, EUR/USD, USD/JPY, US 10Y), indexy (S&P 500, Nasdaq 100, Dow, DAX) a komodity (ropa, zlato, stříbro, měď, plyn) a hlavní zprávy týdne. S API klíčem Claude navíc komentář, co zprávy znamenaly pro jednotlivá aktiva.
 - Duplikáty z různých zdrojů se slučují. Když toho přijde hodně najednou, dostaneš jednu souhrnnou zprávu.
 
 Běží zdarma na GitHub Actions každých 5 minut. Počítač nemusí být zapnutý.
@@ -35,6 +36,7 @@ Běží zdarma na GitHub Actions každých 5 minut. Počítač nemusí být zapn
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | token od BotFathera |
 | `TELEGRAM_CHAT_ID` | tvoje chat ID |
+| `ANTHROPIC_API_KEY` | *(volitelné)* klíč z platform.claude.com pro AI komentář v sobotním souhrnu, pár centů týdně |
 
 ### 4. Spuštění a test
 1. Záložka **Actions**. Pokud se objeví tlačítko pro povolení workflows, potvrď ho.
@@ -62,6 +64,9 @@ Na GitHubu otevři `config.py`, klikni na ✏️, uprav a dej **Commit**. Dalš�
 | `TRANSLATE_TO = "cs"` | Jazyk překladu titulků (`None` = posílat anglicky). |
 | `SHOW_ORIGINAL = False` | `True` = pod českým překladem i původní anglický titulek. |
 | `REMIND_MINUTES_BEFORE = 15` | Kolik minut předem upozornit. |
+| `WEEKLY_REPORT_WEEKDAY/HOUR` | Kdy přijde týdenní souhrn (výchozí sobota 9:00). |
+| `MARKETS` | Sledovaná aktiva v týdenním souhrnu. |
+| `WEEKLY_AI_MODEL` | Model Claude pro týdenní komentář. |
 | `QUIET_HOURS = None` | Např. `(0, 7)` = od půlnoci do 7:00 chodí zprávy potichu. |
 | `MUST_SEND`, `KEYWORD_GROUPS`, `NEGATIVE_PATTERNS` | Klíčová slova a jejich váhy. |
 | `SOURCES` | Zdroje zpráv. Přidat nebo odebrat RSS je jeden řádek. |
@@ -80,5 +85,6 @@ Na GitHubu otevři `config.py`, klikni na ✏️, uprav a dej **Commit**. Dalš�
 
 ## Lokální test (volitelné)
 ```bash
-python3 news_bot.py --dry-run --test   # nic neposílá, jen vypíše
+python3 news_bot.py --dry-run --test     # nic neposílá, jen vypíše
+python3 news_bot.py --dry-run --weekly   # ukázka týdenního souhrnu
 ```
