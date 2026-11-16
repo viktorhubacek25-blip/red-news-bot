@@ -1,0 +1,58 @@
+name: red-news-bot
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # každých 5 minut (GitHub to občas o pár minut zpozdí)
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Testovací běh (pošle stav zdrojů + ukázku skórování)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # jen kvůli keepalive commitu (viz poslední krok)
+
+concurrency:
+  group: red-news-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Načíst stav z minulého běhu
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}
+          restore-keys: state-
+
+      - name: Spustit bota
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }}
+
+      - name: Uložit stav
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # GitHub vypne naplánované běhy po 60 dnech bez aktivity v repozitáři.
+      # Tento krok jednou za 45 dní udělá prázdný commit, aby bot běžel dál.
+      - name: Keepalive
+        run: |
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
+            git config user.name "red-news-bot"
+            git config user.email "red-news-bot@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive"
+            git push
+          fi
