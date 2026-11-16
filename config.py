@@ -104,6 +104,9 @@ KEYWORD_GROUPS = [
         r"\bdowngrades?\b", r"\bdefault\b", r"\bgovernment shutdown\b",
         r"\binvasion\b|\binvades\b", r"\bmissiles?\b|\bairstrikes?\b", r"\bceasefire\b",
         r"\bStrait of Hormuz\b", r"\bnuclear\b",
+        # Námořní doprava / útoky (ropa, Hormuz, Rudé moře)
+        r"\btankers?\b|\bvessels?\b|\bUKMTO\b|\bRed Sea\b",
+        r"\battack(s|ed)?\b|(?<!copper )(?<!gold )(?<!coal )(?<!silver )(?<!lithium )\bmines?\b(?! (output|production|workers|strike))|\bexplosions?\b|\bdrone strikes?\b|\bseiz(e|ed|es|ure)\b",
     ]),
     # Tier B – důležitá makro data a centrální banky
     (4, [
