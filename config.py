@@ -12,8 +12,16 @@ from urllib.parse import quote_plus
 TIMEZONE = "Europe/Prague"
 
 # Minimální skóre, od kterého se headline pošle do Telegramu.
-# Vyšší = méně zpráv, jen to největší. Doporučený rozsah 7–10.
-SCORE_THRESHOLD = 8
+# Vyšší = méně zpráv, jen to největší. Doporučený rozsah 8–12.
+SCORE_THRESHOLD = 10
+
+# Denní pojistka proti zahlcení: po DAILY_SOFT_CAP zprávách za den projdou už jen zprávy se skóre
+# alespoň SCORE_THRESHOLD_AFTER_CAP.
+DAILY_SOFT_CAP = 10
+SCORE_THRESHOLD_AFTER_CAP = 13
+
+# Neposílat články/squawky s výsledky dat (výsledek přijde jednou jako 📊 zpráva z kalendáře)
+SKIP_DATA_RELEASES = True
 
 # Zprávy starší než tohle se ignorují (hodiny).
 MAX_AGE_HOURS = 3
@@ -97,8 +105,8 @@ MUST_SEND = [
     r"\bECB (raises|cuts|hikes|lowers|holds|leaves|keeps)\b",
     r"\bmonetary policy decisions?\b",
     r"\bOPEC\+? (agrees|decides|cuts|raises|boosts|extends)\b",
-    r"\bnon-?farm payrolls?\b.*\b(vs|versus|expected|est)\b",
-    r"\bUS CPI\b.*\b(vs|versus|expected|est|actual)\b",
+    r"\bTrump\b.*\b(announces?|imposes?|slaps?|raises?|hikes?|threatens?|orders?)\b.*\btariffs?\b",
+    r"\b\d{2,3}\s?(%|percent) tariffs?\b",
 ]
 
 # (váha, [vzory]) – každý zasažený vzor přidá váhu, max. 2× váha za skupinu
@@ -146,7 +154,9 @@ KEYWORD_GROUPS = [
     # Směr měnové politiky (v kombinaci s Fedem/ECB apod.)
     (3, [r"\bcuts?\b|\bhikes?\b|\beasing\b|\btightening\b|\bhawkish\b|\bdovish\b|\bpause\b"]),
     # Trump/Bílý dům – samo slabé, v kombinaci s tarify/Fedem silné
-    (2, [r"\bTrump\b", r"\bWhite House\b", r"\bXi\b|\bBeijing\b", r"\bPutin\b|\bKremlin\b", r"\bIran\b|\bIsrael\b"]),
+    (2, [r"\bTrump\b", r"\bWhite House\b", r"\bXi\b|\bBeijing\b", r"\bPutin\b|\bKremlin\b"]),
+    # Blízký východ (ropa)
+    (3, [r"\bIran\b|\bIsrael\b|\bHouthis?\b|\bSaudi\b"]),
 ]
 
 # Zpráva projde jen když se týká USA / dolaru / US indexů / komodit (ostatní měny jen v sobotním souhrnu).
@@ -167,7 +177,7 @@ DATA_RELEASE_PATTERN = r"(\bactual\b|\bvs\.?\b|\bversus\b).*(\bexp(ected)?\b|\be
 DATA_RELEASE_BONUS = 3
 
 # Bonus pro Trumpovy příspěvky z Truth Social (pošlou se jen ty, které obsahují tržní témata)
-TRUMP_BONUS = 3
+TRUMP_BONUS = 4
 # Bonus, když headline odpovídá červené události z kalendáře (±60 min od vydání)
 CALENDAR_MATCH_BONUS = 5
 
