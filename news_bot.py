@@ -274,9 +274,14 @@ def calendar_keywords(title):
     return {w for w in re.findall(r"[a-z][a-z\-]+", title.lower()) if w not in junk and len(w) >= 3}
 
 
-def score_item(item, active_events):
+REL_RE = re.compile(C.REQUIRE_RELEVANCE, FLAGS_I) if getattr(C, "REQUIRE_RELEVANCE", None) else None
+
+
+def score_item(item, active_events, relevance=True):
     t = item["title"]
     reasons = []
+    if relevance and REL_RE and not item.get("trump") and not REL_RE.search(t):
+        return 0, ["mimo USD/komodity"]
     for r in MUST_RE:
         if r.search(t):
             return 99, ["MUST"]
@@ -976,8 +981,8 @@ def week_headlines(monday, friday):
         except Exception as e:  # noqa: BLE001
             log(f"FAIL týdenní titulky: {e}")
     scored, toks = [], []
-    for it in sorted(items, key=lambda x: -score_item(x, [])[0]):
-        sc = score_item(it, [])[0]
+    for it in sorted(items, key=lambda x: -score_item(x, [], relevance=False)[0]):
+        sc = score_item(it, [], relevance=False)[0]
         if sc < 5:
             continue
         tk = tokens(it["title"])
