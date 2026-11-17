@@ -186,7 +186,12 @@ CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 CALENDAR_REFRESH_MINUTES = 60  # feed má limit na počet stažení, nestahovat častěji
 
 # Měny, jejichž červené události chceš (USD + hlavní složky DXY + Čína)
+# – denní přehledy, upozornění a výsledky: jen DAILY_CURRENCIES
+# – sobotní souhrn: všechny CALENDAR_CURRENCIES
 CALENDAR_CURRENCIES = ["USD", "EUR", "JPY", "CNY"]
+DAILY_CURRENCIES = ["USD"]
+# Po zveřejnění červené události poslat výsledek (skutečnost vs. odhad)
+SEND_RESULTS = True
 CALENDAR_IMPACTS = ["High"]
 # Události, které chceš vždy, i když nejsou červené (regex na název)
 CALENDAR_ALWAYS = [r"Crude Oil Inventories", r"OPEC"]
