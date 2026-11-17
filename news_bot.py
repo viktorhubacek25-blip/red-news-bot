@@ -1149,15 +1149,25 @@ def top_text(items, limit=10):
     t = time.time()
     fresh = [it for it in items if not it.get("published") or t - it["published"] <= C.MAX_AGE_HOURS * 3600]
     scored = sorted(((score_item(it, [])[0], it) for it in fresh), key=lambda x: -x[0])
-    uniq, seen = [], set()
+    uniq, toks = [], []
     for sc, it in scored:
-        if it["title"] not in seen:
-            uniq.append((sc, it))
-            seen.add(it["title"])
+        tk = tokens(it["title"])
+        if any(similarity(tk, t) >= C.DUPLICATE_SIMILARITY for t in toks):
+            continue
+        toks.append(tk)
+        uniq.append((sc, it))
+        if len(uniq) >= limit:
+            break
     lines = [f"<b>Top headliny za posledních {C.MAX_AGE_HOURS} h</b> (práh {C.SCORE_THRESHOLD}):"]
-    for sc, it in uniq[:limit]:
+    for sc, it in uniq:
         mark = "✅" if sc >= C.SCORE_THRESHOLD else "▫️"
-        lines.append(f"{mark} [{sc if sc < 99 else 'MAX'}] {html.escape(it['title'])} <i>({html.escape(it['publisher'])})</i>")
+        title = _short(it["title"], 250) if it.get("trump") else it["title"]
+        shown = translate(title)
+        if it.get("trump"):
+            shown = "Trump: " + shown
+        lnk = html.escape(it.get("link", ""), quote=True)
+        txt = f'<a href="{lnk}">{html.escape(shown)}</a>' if lnk else html.escape(shown)
+        lines.append(f"{mark} [{sc if sc < 99 else 'MAX'}] {txt} <i>({html.escape(it['publisher'])})</i>")
     if not uniq:
         lines.append("— nic čerstvého —")
     return "\n".join(lines)
