@@ -198,6 +198,8 @@ HOLIDAY_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CNY", "CHF", "CAD", "AUD"]
 DAILY_SUMMARY_HOUR = 7
 # Večerní přehled – události na zítřek (místní čas). None = vypnuto.
 EVENING_SUMMARY_HOUR = 20
+# Ve večerním přehledu (po–pá) i denní výsledky všech aktiv z MARKETS
+EVENING_MARKETS = True
 # V pondělí přidat do ranního přehledu výhled celého týdne
 WEEKLY_OUTLOOK_ON_MONDAY = True
 
