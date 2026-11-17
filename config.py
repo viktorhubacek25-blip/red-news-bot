@@ -64,6 +64,8 @@ SOURCES = [
     # Oficiální zdroje centrálních bank
     {"name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "trust": 3},
     {"name": "ECB", "url": "https://www.ecb.europa.eu/rss/press.html", "trust": 2},
+    # Trumpovy příspěvky z Truth Social (archiv trumpstruth.org) – projdou jen ty o trzích
+    {"name": "Trump (Truth Social)", "url": "https://trumpstruth.org/feed", "trust": 0, "trump": True},
     # Google News filtrovaný jen na top agentury (Reuters, Bloomberg, WSJ, FT, CNBC, AP)
     {"name": "GN Centrální banky", "url": _gnews('(Fed OR FOMC OR Powell OR "rate cut" OR "rate hike" OR ECB OR "Bank of Japan")'), "trust": 0, "google": True},
     {"name": "GN Makro data", "url": _gnews('(CPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")'), "trust": 0, "google": True},
@@ -151,6 +153,8 @@ KEYWORD_GROUPS = [
 DATA_RELEASE_PATTERN = r"(\bactual\b|\bvs\.?\b|\bversus\b).*(\bexp(ected)?\b|\best(imate)?\b|\bforecast\b|\bconsensus\b|\bprior\b|\bprev(ious)?\b)"
 DATA_RELEASE_BONUS = 3
 
+# Bonus pro Trumpovy příspěvky z Truth Social (pošlou se jen ty, které obsahují tržní témata)
+TRUMP_BONUS = 3
 # Bonus, když headline odpovídá červené události z kalendáře (±60 min od vydání)
 CALENDAR_MATCH_BONUS = 5
 
