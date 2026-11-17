@@ -163,6 +163,12 @@ def parse_feed(raw, source):
             publisher = ""
         else:
             title = _clean(_text(n.find("title")))
+            desc = _clean(_text(n.find("description")))
+            if source.get("trump"):
+                # Truth Social: text příspěvku je v popisu, titulek bývá generický
+                title = desc or title
+                if not title or re.fullmatch(r"(RT[: ].*|https?://\S+|\[No Title\].*)", title):
+                    continue
             link = _text(n.find("link"))
             guid = _text(n.find("guid")) or link
             pub = _parse_date(_text(n.find("pubDate")) or _text(n.find("{http://purl.org/dc/elements/1.1/}date")))
@@ -182,6 +188,7 @@ def parse_feed(raw, source):
                 "publisher": publisher or source["name"],
                 "source": source["name"],
                 "trust": source.get("trust", 0),
+                "trump": bool(source.get("trump")),
             }
         )
     return items
@@ -299,6 +306,12 @@ def score_item(item, active_events):
     if any(r.search(t) for r in NEG_RE):
         score -= C.NEGATIVE_PENALTY
         reasons.append("šum")
+    if item.get("trump"):
+        if score >= 4:  # jen příspěvky s tržním tématem
+            score += getattr(C, "TRUMP_BONUS", 3)
+            reasons.append("trump")
+        else:
+            score = min(score, 0)
     return score, reasons
 
 
@@ -438,8 +451,16 @@ def display_title(item):
     return tr, None
 
 
+def _short(text, limit=450):
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
+
+
 def format_alert(item, score):
+    if item.get("trump"):
+        item = dict(item, title=_short(item["title"]))
     shown, original = display_title(item)
+    if item.get("trump"):
+        shown = "Trump (Truth Social): " + shown
     tags = asset_tags(item["title"])
     meta = " · ".join(x for x in [html.escape(item["publisher"]), fmt_time(item.get("published"))] if x)
     lines = [f"🔴 <b>{html.escape(shown)}</b>"]
@@ -459,7 +480,11 @@ def format_digest(scored):
     lines = [f"🔴 <b>{len(scored)} důležitých zpráv</b>"]
     for score, item in scored:
         link = html.escape(item.get("link", ""), quote=True)
+        if item.get("trump"):
+            item = dict(item, title=_short(item["title"], 250))
         shown, _ = display_title(item)
+        if item.get("trump"):
+            shown = "Trump: " + shown
         t = html.escape(shown)
         src = html.escape(item["publisher"])
         entry = f'• <a href="{link}">{t}</a>' if link else f"• {t}"
