@@ -637,6 +637,50 @@ def event_date(ev):
     return datetime.fromtimestamp(ev["ts"], TZ).date()
 
 
+def daily_only(events):
+    """Události pro denní přehledy/upozornění – jen měny z DAILY_CURRENCIES."""
+    cur = set(getattr(C, "DAILY_CURRENCIES", C.CALENDAR_CURRENCIES)) | {"ALL"}
+    return [e for e in events if e["country"] in cur]
+
+
+def with_actuals(events, local_now):
+    """Doplní skutečné hodnoty z forexfactory.com (aktuální týden)."""
+    monday = local_now.date() - timedelta(days=local_now.weekday())
+    try:
+        web = ff_week_events(monday)
+    except Exception as e:  # noqa: BLE001
+        log(f"FAIL ForexFactory web (výsledky): {e}")
+        return events
+    out = []
+    for ev in events:
+        m = next((w for w in web if w["country"] == ev["country"] and w["title"] == ev["title"]
+                  and abs(w["ts"] - ev["ts"]) < 300), None)
+        out.append(dict(ev, actual=m["actual"]) if m and m.get("actual") else ev)
+    return out
+
+
+def _num(v):
+    m = re.search(r"-?\d+(\.\d+)?", (v or "").replace(",", ""))
+    return float(m.group()) if m else None
+
+
+def fmt_result_line(ev):
+    a, f = ev.get("actual", ""), ev.get("forecast", "")
+    na, nf = _num(a), _num(f)
+    if na is not None and nf is not None:
+        cmp_ = "▲ nad odhadem" if na > nf else ("▼ pod odhadem" if na < nf else "= v souladu s odhadem")
+    else:
+        cmp_ = ""
+    flag = FLAGS.get(ev["country"], "")
+    line = f"{flag} <b>{html.escape(ev['title'])}: {html.escape(a)}</b>"
+    extra = [x for x in [f"odhad {html.escape(f)}" if f else "", f"předch. {html.escape(ev.get('previous', ''))}" if ev.get("previous") else ""] if x]
+    if extra:
+        line += f" <i>({', '.join(extra)})</i>"
+    if cmp_:
+        line += f"\n   {cmp_}"
+    return line
+
+
 def fmt_event_line(ev, with_day=False):
     d = event_date(ev)
     flag = FLAGS.get(ev["country"], "")
@@ -646,6 +690,8 @@ def fmt_event_line(ev, with_day=False):
                 f"<i>(svátek, banky zavřené → nižší likvidita)</i>")
     when = "celý den" if ev["all_day"] else datetime.fromtimestamp(ev["ts"], TZ).strftime("%H:%M")
     extra = []
+    if ev.get("actual"):
+        extra.append(f"<b>skutečnost {html.escape(ev['actual'])}</b>")
     if ev.get("forecast"):
         extra.append(f"odhad {html.escape(ev['forecast'])}")
     if ev.get("previous"):
@@ -701,7 +747,33 @@ def evening_summary(events, local_now, with_markets=False):
     return "\n\n".join(parts) if parts else None
 
 
-def calendar_tasks(st, events, local_now, tg, silent):
+def send_results(st, events, local_now, tg, silent):
+    """Po zveřejnění červené události pošle skutečnost vs. odhad (z forexfactory.com)."""
+    if not getattr(C, "SEND_RESULTS", True):
+        return
+    t = time.time()
+    sent = st.setdefault("results_sent", {})
+    pending = [e for e in events if not e["all_day"] and e["impact"] == "High" and e["key"] not in sent
+               and 60 <= t - e["ts"] <= 3 * 3600]
+    if not pending:
+        return
+    enriched = {e["key"]: e for e in with_actuals(pending, local_now)}
+    by_time = {}
+    for e in pending:
+        ev = enriched.get(e["key"], e)
+        if ev.get("actual"):
+            by_time.setdefault(ev["ts"], []).append(ev)
+        elif t - e["ts"] > 2.5 * 3600:
+            sent[e["key"]] = t  # výsledek se neobjevil, vzdát
+    for ts, evs in sorted(by_time.items()):
+        lines = [f"📊 <b>Výsledky ({fmt_time(ts)})</b>"] + [fmt_result_line(e) for e in evs]
+        if tg.send("\n".join(lines), silent=silent):
+            for e in evs:
+                sent[e["key"]] = t
+
+
+def calendar_tasks(st, all_events, local_now, tg, silent):
+    events = daily_only(all_events)
     today = local_now.date().isoformat()
     # Ranní přehled
     if C.DAILY_SUMMARY_HOUR is not None:
@@ -732,6 +804,8 @@ def calendar_tasks(st, events, local_now, tg, silent):
         if tg.send("\n".join(lines), silent=silent):
             for e in evs:
                 st["reminded"][e["key"]] = t
+    send_results(st, events, local_now, tg, silent)
+    st["results_sent"] = {k: v for k, v in st.get("results_sent", {}).items() if t - v < 8 * 86400}
     # Události, které právě vycházejí → bonus pro headliny s výsledkem
     return [e for e in events if not e["all_day"] and -5 * 60 <= t - e["ts"] <= 60 * 60]
 
@@ -1096,9 +1170,9 @@ def handle_commands(st, tg, events, items, local_now):
                "help": "pomoc", "start": "pomoc"}.get(cmd, cmd)
         log(f"CMD  {cmd}")
         if cmd == "dnes":
-            tg.send(day_summary(events, local_now.date(), "dnes"))
+            tg.send(day_summary(with_actuals(daily_only(events), local_now), local_now.date(), "dnes"))
         elif cmd == "zitra":
-            tg.send(day_summary(events, local_now.date() + timedelta(days=1), "zítra"))
+            tg.send(day_summary(daily_only(events), local_now.date() + timedelta(days=1), "zítra"))
         elif cmd == "tyden":
             tg.send("⏳ Připravuji souhrn tohoto týdne…")
             tg.send(weekly_report(st, events, local_now, 0))
@@ -1222,8 +1296,8 @@ def run_test(st, tg, items, events, local_now):
     except Exception as e:  # noqa: BLE001
         h.update(fails=1, error=f"{type(e).__name__}: {e}"[:200], count=0)
     tg.send("🧪 <b>Test Red News bota</b>\n\n" + health_text(st) + "\n\n" + top_text(items))
-    tg.send(daily_summary(events, local_now))
-    ev = evening_summary(events, local_now)
+    tg.send(daily_summary(daily_only(events), local_now))
+    ev = evening_summary(daily_only(events), local_now)
     if ev:
         tg.send(ev)
     tg.send(help_text())
