@@ -682,15 +682,23 @@ def daily_summary(events, local_now):
                        week_outlook=C.WEEKLY_OUTLOOK_ON_MONDAY and today.weekday() == 0)
 
 
-def evening_summary(events, local_now):
-    """Večerní přehled na zítřek. None, pokud je zítra víkend a nic se neděje."""
+def evening_summary(events, local_now, with_markets=False):
+    """Večerní přehled: v pracovní dny výsledky trhů + kalendář na zítřek."""
     tomorrow = local_now.date() + timedelta(days=1)
+    parts = []
+    if with_markets and local_now.weekday() < 5 and getattr(C, "EVENING_MARKETS", True):
+        try:
+            parts.append(markets_today_text(local_now))
+        except Exception as e:  # noqa: BLE001
+            log(f"Trhy dnes selhaly: {e}")
     has_any = any(event_date(e) == tomorrow for e in events)
-    if not has_any and tomorrow.weekday() >= 5:
-        return None
-    # V neděli večer přidej výhled celého týdne
-    week = C.WEEKLY_OUTLOOK_ON_MONDAY and tomorrow.weekday() == 0
-    return day_summary(events, tomorrow, "zítra", week_outlook=week)
+    if has_any or tomorrow.weekday() < 5:
+        # V neděli večer přidej výhled celého týdne
+        week = C.WEEKLY_OUTLOOK_ON_MONDAY and tomorrow.weekday() == 0
+        parts.append(day_summary(events, tomorrow, "zítra", week_outlook=week))
+    elif parts:
+        parts.append("📅 <b>Zítra víkend</b> – žádné červené události.")
+    return "\n\n".join(parts) if parts else None
 
 
 def calendar_tasks(st, events, local_now, tg, silent):
@@ -703,7 +711,7 @@ def calendar_tasks(st, events, local_now, tg, silent):
     # Večerní přehled na zítřek
     eh = getattr(C, "EVENING_SUMMARY_HOUR", None)
     if eh is not None and local_now.hour >= eh and st.get("evening_date") != today:
-        msg = evening_summary(events, local_now)
+        msg = evening_summary(events, local_now, with_markets=True)
         if msg is None or tg.send(msg, silent=silent):
             st["evening_date"] = today
     # Upozornění před událostí (seskupené podle času)
@@ -757,6 +765,47 @@ def _closes_stooq(symbol):
     if not out:
         raise ValueError("prázdná data")
     return out[-40:]
+
+
+def get_closes(ysym, ssym):
+    """Denní závěry (Yahoo, záloha Stooq). Vrací (closes, chyba)."""
+    err = ""
+    for fn, sym in ((_closes_yahoo, ysym), (_closes_stooq, ssym)):
+        if not sym:
+            continue
+        try:
+            return fn(sym), ""
+        except Exception as e:  # noqa: BLE001
+            err = f"{type(e).__name__}: {e}"[:80]
+    return None, err
+
+
+def daily_changes():
+    """Změna posledního (i rozběhnutého dnešního) dne proti předchozímu závěru."""
+    result = []
+    for group, assets in C.MARKETS:
+        rows = []
+        for name, ysym, ssym, kind in assets:
+            closes, err = get_closes(ysym, ssym)
+            if not closes or len(closes) < 2:
+                rows.append((name, None, err or "málo dat", kind))
+                continue
+            last, ref = closes[-1][1], closes[-2][1]
+            if kind == "yield":
+                if last > 20:
+                    last, ref = last / 10, ref / 10
+                rows.append((name, last, (last - ref) * 100, kind))
+            else:
+                rows.append((name, last, (last / ref - 1) * 100, kind))
+        result.append((group, rows))
+    return result
+
+
+def markets_today_text(local_now):
+    lines = [f"📈 <b>Trhy dnes – stav k {local_now.strftime('%H:%M')}</b> <i>(USA ještě obchoduje)</i>"]
+    for group, rows in daily_changes():
+        lines += ["", f"<b>{group}</b>"] + [fmt_change_row(*r) for r in rows]
+    return "\n".join(lines)
 
 
 def weekly_changes(local_now, weeks_back=0):
