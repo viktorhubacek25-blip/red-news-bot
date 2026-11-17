@@ -282,6 +282,14 @@ def score_item(item, active_events, relevance=True):
     reasons = []
     if relevance and REL_RE and not item.get("trump") and not REL_RE.search(t):
         return 0, ["mimo USD/komodity"]
+    if relevance and getattr(C, "SKIP_DATA_RELEASES", False):
+        if DATA_RE.search(t) and re.search(r"\d", t):
+            return 0, ["výsledek dat"]
+        low0 = t.lower()
+        for ev in active_events:
+            kws = calendar_keywords(ev["title"])
+            if kws and any(k in low0 for k in kws):
+                return 0, ["výsledek dat (kalendář)"]
     for r in MUST_RE:
         if r.search(t):
             return 99, ["MUST"]
@@ -1209,8 +1217,14 @@ def select_alerts(st, items, active_events):
         score, reasons = score_item(it, active_events)
         scored_all.append((score, it, reasons))
     scored_all.sort(key=lambda x: -x[0])
+    midnight = datetime.now(TZ).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    sent_today = sum(1 for s_ in st["sent"] if s_["t"] >= midnight)
     for score, it, reasons in scored_all:
-        if score < C.SCORE_THRESHOLD:
+        cap = getattr(C, "DAILY_SOFT_CAP", None)
+        limit = C.SCORE_THRESHOLD
+        if cap and sent_today + len(picked) >= cap:
+            limit = max(limit, getattr(C, "SCORE_THRESHOLD_AFTER_CAP", limit))
+        if score < limit:
             continue
         tok = tokens(it["title"])
         if it.get("link") in seen_links:
