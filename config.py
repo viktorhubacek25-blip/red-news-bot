@@ -149,6 +149,19 @@ KEYWORD_GROUPS = [
     (2, [r"\bTrump\b", r"\bWhite House\b", r"\bXi\b|\bBeijing\b", r"\bPutin\b|\bKremlin\b", r"\bIran\b|\bIsrael\b"]),
 ]
 
+# Zpráva projde jen když se týká USA / dolaru / US indexů / komodit (ostatní měny jen v sobotním souhrnu).
+# None = vypnout tento filtr.
+REQUIRE_RELEVANCE = (
+    r"(?-i:\bUS\b|\bU\.S\.)|\bUnited States\b|\bAmerica(n)?\b|\bFed\b|\bFed's\b|\bFOMC\b|\bFederal Reserve\b"
+    r"|\bPowell\b|\bWarsh\b|\bTreasur(y|ies)\b|\bBessent\b|\bTrump\b|\bWhite House\b|\bWashington\b"
+    r"|\bCongress\b|\bSenate\b|\bdollar\b|\bDXY\b|\bgreenback\b|\bWall Street\b|\bS&P\b|\bNasdaq\b"
+    r"|\bDow\b|\bVIX\b|\bnon-?farm\b|\bPCE\b|\bISM\b|\bjobless claims\b"
+    r"|\boil\b|\bcrude\b|\bBrent\b|\bWTI\b|\bOPEC\b|\bgold\b|\bsilver\b|\bcopper\b|\bnatural gas\b"
+    r"|\bEIA\b|\bHormuz\b|\btankers?\b|\bIran\b|\bRed Sea\b|\btariffs?\b|\bWaller\b|\bJefferson\b"
+    r"|\bBowman\b|\bBarr\b|\bLogan\b|\bDaly\b|\bGoolsbee\b|\bHammack\b|\bMusalem\b|\bKashkari\b"
+    r"|\bSchmid\b|\bMiran\b|\bBostic\b|\bHarker\b|\bWilliams\b|\bCollins\b"
+)
+
 # Headline s výsledkem dat ("US CPI 3.1% vs 3.0% expected")
 DATA_RELEASE_PATTERN = r"(\bactual\b|\bvs\.?\b|\bversus\b).*(\bexp(ected)?\b|\best(imate)?\b|\bforecast\b|\bconsensus\b|\bprior\b|\bprev(ious)?\b)"
 DATA_RELEASE_BONUS = 3
