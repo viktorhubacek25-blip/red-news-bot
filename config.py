@@ -99,7 +99,7 @@ PUBLISHER_TRUST = {
 # Tyto vzory pošlou zprávu VŽDY (skóre 99) – zásadní události.
 MUST_SEND = [
     r"\bFOMC statement\b",
-    r"\bFed(eral Reserve)? (raises|cuts|hikes|lowers|holds|leaves|keeps)\b.*\brates?\b",
+    r"(^|: )(the )?Fed(eral Reserve)? (raises|cuts|hikes|lowers|holds|leaves|keeps)\b.*\brates?\b",
     r"\bFed(eral Reserve)? (decision|rate decision)\b",
     r"\bemergency (rate )?(cut|hike|meeting)\b",
     r"\bECB (raises|cuts|hikes|lowers|holds|leaves|keeps)\b",
