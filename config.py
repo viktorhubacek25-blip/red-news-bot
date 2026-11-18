@@ -122,8 +122,10 @@ KEYWORD_GROUPS = [
         r"\binvasion\b|\binvades\b", r"\bmissiles?\b|\bairstrikes?\b", r"\bceasefire\b",
         r"\bStrait of Hormuz\b", r"\bnuclear\b",
         # Námořní doprava / útoky (ropa, Hormuz, Rudé moře)
-        r"\btankers?\b|\bvessels?\b|\bUKMTO\b|\bRed Sea\b",
-        r"\battack(s|ed)?\b|(?<!copper )(?<!gold )(?<!coal )(?<!silver )(?<!lithium )\bmines?\b(?! (output|production|workers|strike))|\bexplosions?\b|\bdrone strikes?\b|\bseiz(e|ed|es|ure)\b",
+        # tanker/loď jen v souvislosti s ropou nebo konfliktem (ne nehody říčních lodí apod.)
+        r"^(?=.*\b(Hormuz|Red Sea|Iran\w*|IRGC|Houthis?|oil|crude|attack\w*|mines?|strikes?|struck|seiz\w*|UKMTO|Gulf|Oman\w*|navy|fire|explosion)\b).*\b(tankers?|vessels?)\b|\bUKMTO\b|\bRed Sea\b",
+        # „mine“ jen jako námořní mina, ne důl / těžařská firma
+        r"\battack(s|ed)?\b|\b(sea|naval) mines?\b|\bhit(s|ting)? (a |another )?mines?\b|\bmines? (in|near|off|east|west|north|south)\b|\bmin(ed|ing) (the )?(strait|waters|sea)\b|\bexplosions?\b|\bdrone strikes?\b|\bseiz(e|ed|es|ure)\b",
     ]),
     # Tier B – důležitá makro data a centrální banky
     (4, [
@@ -192,6 +194,15 @@ NEGATIVE_PATTERNS = [
     r"\bapplication\b", r"\bjob opening\b",
 ]
 NEGATIVE_PENALTY = 12
+
+# Pokračující témata: po odeslání zprávy na téma dalších N hodin nic dalšího k tématu
+# (kromě MUST_SEND). Agentury o jednom příběhu píšou pořád nové titulky, slovní
+# deduplikace je nepozná. (název, regex, hodin)
+TOPIC_COOLDOWNS = [
+    ("Hormuz / tankery / Rudé moře",
+     r"\bHormuz\b|\btankers?\b|\bvessels?\b|\bUKMTO\b|\bRed Sea\b|\bHouthis?\b|\b(sea|naval) mines?\b|\bhit(s|ting)? (a |another )?mines?\b",
+     12),
+]
 
 # ---------------------------------------------------------------------------
 # ŠTÍTKY AKTIV v Telegram zprávě

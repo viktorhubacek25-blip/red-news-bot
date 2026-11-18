@@ -55,6 +55,7 @@ GROUPS_RE = [(w, [re.compile(p, FLAGS_I) for p in pats]) for w, pats in C.KEYWOR
 NEG_RE = [re.compile(p, FLAGS_I) for p in C.NEGATIVE_PATTERNS]
 DATA_RE = re.compile(C.DATA_RELEASE_PATTERN, FLAGS_I)
 TAGS_RE = [(label, re.compile(p, FLAGS_I)) for label, p in C.ASSET_TAGS]
+TOPICS_RE = [(n, re.compile(p, FLAGS_I), h) for n, p, h in getattr(C, "TOPIC_COOLDOWNS", [])]
 CAL_ALWAYS_RE = [re.compile(p, FLAGS_I) for p in C.CALENDAR_ALWAYS]
 
 
@@ -85,6 +86,7 @@ def load_state(path):
     st.setdefault("week_log", [])
     st.setdefault("calendar", {"fetched_at": 0, "events": []})
     st.setdefault("health", {})
+    st.setdefault("topic_sent", {})
     return st
 
 
@@ -1347,6 +1349,13 @@ def select_alerts(st, items, active_events):
         if any(similarity(tok, s) >= C.DUPLICATE_SIMILARITY for s in recent_sent + picked_tok):
             log(f"DUP  {it['title']}")
             continue
+        topic = next((tc for tc in TOPICS_RE if tc[1].search(it["title"])), None)
+        if topic and score < 99:
+            name, _, hours = topic
+            if t - st["topic_sent"].get(name, 0) < hours * 3600:
+                log(f"TOPIC [{name}] {it['title']}")
+                continue
+            st["topic_sent"][name] = t
         picked.append((score, it))
         picked_tok.append(tok)
         seen_links.add(it.get("link"))
