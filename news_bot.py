@@ -813,6 +813,14 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
         msg = evening_summary(events, local_now, with_markets=True)
         if msg is None or tg.send(msg, silent=silent):
             st["evening_date"] = today
+            # Hned za ním 💰 za dnešek (jen v pracovní dny)
+            if getattr(C, "MARKET_VALUE_EVENING", False) and local_now.weekday() < 5:
+                try:
+                    value = evening_value_text(local_now)
+                    if value:
+                        tg.send(value, silent=silent)
+                except Exception as e:  # noqa: BLE001
+                    log(f"Večerní 💰 selhalo: {e}")
     # Upozornění před událostí (seskupené podle času)
     t = time.time()
     due = [
@@ -915,14 +923,14 @@ def markets_today_text(local_now):
     lines = [f"📈 <b>Trhy dnes – stav k {local_now.strftime('%H:%M')}</b> <i>(USA ještě obchoduje)</i>"]
     for group, rows in changes:
         lines += ["", f"<b>{group}</b>"] + [fmt_change_row(*r) for r in rows]
-    if getattr(C, "MARKET_VALUE_EVENING", False):
-        try:
-            value = market_value_text(changes)
-            if value:
-                lines += ["", value]
-        except Exception as e:  # noqa: BLE001
-            log(f"Blok hodnoty trhu selhal: {e}")
     return "\n".join(lines)
+
+
+def evening_value_text(local_now):
+    """Večerní zpráva 💰: kolik $ zatím dnes přibylo / ubylo (průběžně, USA ještě obchoduje)."""
+    title = (f"💰 <b>Kolik $ zatím dnes přibylo / ubylo – stav k {local_now.strftime('%H:%M')}</b> "
+             "<i>(odhad, USA ještě obchoduje)</i>")
+    return market_value_text(daily_changes(), title)
 
 
 def fmt_usd_big(x):
@@ -1385,6 +1393,8 @@ def run(args):
         if args.evening:
             msg = evening_summary(daily_only(events), local_now, with_markets=True)
             tg.send(msg or "📅 Večerní přehled: nic k odeslání.")
+            if getattr(C, "MARKET_VALUE_EVENING", False):
+                tg.send(evening_value_text(local_now) or "💰 Data za dnešek zatím nejsou k dispozici.")
         if not args.test:
             save_state(st, args.state)
             return

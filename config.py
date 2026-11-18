@@ -293,7 +293,7 @@ MARKETS = [
 # Ráno (v DAILY_SUMMARY_HOUR) přijde samostatně za předchozí obchodní den, s konečnými čísly.
 MARKET_VALUE_MORNING = True
 MARKET_VALUE_MORNING_DAYS = [1, 2, 3, 4, 5]  # 0 = pondělí … út–so = za po–pá
-MARKET_VALUE_EVENING = False  # True = přidat i do večerního přehledu (průběžná čísla)
+MARKET_VALUE_EVENING = True  # ve 20:00 (po–pá) samostatná zpráva 💰 za dnešek, průběžná čísla
 # název aktiva (jako v MARKETS): (typ, hodnota, započítat do součtu, poznámka)
 #   "cap" = tržní kapitalizace indexu v USD → změna = kapitalizace × denní změna %
 #           (přibližné hodnoty k 11/2026, stačí jednou za čas aktualizovat)
@@ -305,7 +305,6 @@ MARKET_VALUE = {
     "S&P 500":    ("cap", 70e12, True, ""),
     "Nasdaq 100": ("cap", 40e12, False, "v S&P"),
     "Dow Jones":  ("cap", 19e12, False, "v S&P"),
-    "DAX":        ("cap", 2.4e12, True, ""),
     "Zlato":      ("qty", 7.21e9, True, "zásoby"),         # trojské unce (WGC: ~224 200 t)
     "Stříbro":    ("qty", 56e9, True, "zásoby"),           # trojské unce (~1,75 mil. t)
     "Ropa Brent": ("qty", 38.3e9, True, "roční produkce"),  # barely (~105 mil. barelů/den)
