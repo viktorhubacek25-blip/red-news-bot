@@ -1370,8 +1370,12 @@ def run(args):
             save_state(st, args.state)
             return
 
-    if getattr(args, "value", False):
-        tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+    if getattr(args, "value", False) or getattr(args, "evening", False):
+        if args.value:
+            tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+        if args.evening:
+            msg = evening_summary(daily_only(events), local_now, with_markets=True)
+            tg.send(msg or "📅 Večerní přehled: nic k odeslání.")
         if not args.test:
             save_state(st, args.state)
             return
@@ -1450,6 +1454,7 @@ def main():
     ap.add_argument("--weekly", action="store_true", help="pošle týdenní souhrn hned")
     ap.add_argument("--weeks-back", type=int, default=0, help="souhrn za N týdnů zpět (1 = minulý týden)")
     ap.add_argument("--value", action="store_true", help="pošle ranní 💰 za včerejšek hned")
+    ap.add_argument("--evening", action="store_true", help="pošle večerní přehled (trhy + zítřek) hned")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 
