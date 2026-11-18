@@ -277,3 +277,27 @@ MARKETS = [
         ("Zemní plyn", "NG=F", "ng.f", "price"),
     ]),
 ]
+
+# Blok „💰 Kolik $ přibylo / ubylo“ (odhad změny hodnoty trhu v dolarech)
+# Ráno (v DAILY_SUMMARY_HOUR) přijde samostatně za předchozí obchodní den, s konečnými čísly.
+MARKET_VALUE_MORNING = True
+MARKET_VALUE_MORNING_DAYS = [1, 2, 3, 4, 5]  # 0 = pondělí … út–so = za po–pá
+MARKET_VALUE_EVENING = False  # True = přidat i do večerního přehledu (průběžná čísla)
+# název aktiva (jako v MARKETS): (typ, hodnota, započítat do součtu, poznámka)
+#   "cap" = tržní kapitalizace indexu v USD → změna = kapitalizace × denní změna %
+#           (přibližné hodnoty k 11/2026, stačí jednou za čas aktualizovat)
+#   "qty" = množství komodity v jednotkách ceny → změna = množství × změna ceny
+#           (počítá se z aktuální ceny, aktualizovat není potřeba)
+# Nasdaq 100 a Dow jsou z velké části uvnitř S&P 500 → do součtu se nepočítají.
+# Ropa WTI chybí záměrně, aby se ropa nepočítala dvakrát (bere se Brent).
+MARKET_VALUE = {
+    "S&P 500":    ("cap", 70e12, True, ""),
+    "Nasdaq 100": ("cap", 40e12, False, "v S&P"),
+    "Dow Jones":  ("cap", 19e12, False, "v S&P"),
+    "DAX":        ("cap", 2.4e12, True, ""),
+    "Zlato":      ("qty", 7.21e9, True, "zásoby"),         # trojské unce (WGC: ~224 200 t)
+    "Stříbro":    ("qty", 56e9, True, "zásoby"),           # trojské unce (~1,75 mil. t)
+    "Ropa Brent": ("qty", 38.3e9, True, "roční produkce"),  # barely (~105 mil. barelů/den)
+    "Měď":        ("qty", 50.7e9, True, "roční produkce"),  # libry (~23 mil. t/rok)
+    "Zemní plyn": ("qty", 39e9, True, "roční produkce USA"),  # MMBtu (Henry Hub ~ US produkce)
+}

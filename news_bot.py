@@ -793,6 +793,18 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
         if local_now.hour >= C.DAILY_SUMMARY_HOUR and st["summary_date"] != today:
             if tg.send(daily_summary(events, local_now), silent=silent):
                 st["summary_date"] = today
+        # Ranní 💰 za včerejšek (zkouší znovu každý běh, do 11:00 to vzdá)
+        if (getattr(C, "MARKET_VALUE_MORNING", False) and local_now.hour >= C.DAILY_SUMMARY_HOUR
+                and st.get("value_date") != today
+                and local_now.weekday() in getattr(C, "MARKET_VALUE_MORNING_DAYS", [1, 2, 3, 4, 5])):
+            try:
+                msg = morning_value_text(local_now)
+                if msg is None or tg.send(msg, silent=silent):
+                    st["value_date"] = today
+            except Exception as e:  # noqa: BLE001
+                log(f"Ranní 💰 selhalo: {e}")
+                if local_now.hour >= 11:
+                    st["value_date"] = today
     # Večerní přehled na zítřek
     eh = getattr(C, "EVENING_SUMMARY_HOUR", None)
     if eh is not None and local_now.hour >= eh and st.get("evening_date") != today:
@@ -867,13 +879,21 @@ def get_closes(ysym, ssym):
     return None, err
 
 
-def daily_changes():
-    """Změna posledního (i rozběhnutého dnešního) dne proti předchozímu závěru."""
+def daily_changes(before=None, dates_out=None):
+    """Změna posledního (i rozběhnutého dnešního) dne proti předchozímu závěru.
+
+    before = datum: použij jen dny před ním (ráno = včerejší konečné závěry).
+    dates_out = seznam, do kterého se přidá datum posledního použitého dne.
+    """
     result = []
     for group, assets in C.MARKETS:
         rows = []
         for name, ysym, ssym, kind in assets:
             closes, err = get_closes(ysym, ssym)
+            if closes and before is not None:
+                closes = [(d, c) for d, c in closes if d < before]
+            if closes and dates_out is not None and len(closes) >= 2:
+                dates_out.append(closes[-1][0])
             if not closes or len(closes) < 2:
                 rows.append((name, None, err or "málo dat", kind))
                 continue
@@ -889,9 +909,94 @@ def daily_changes():
 
 
 def markets_today_text(local_now):
+    changes = daily_changes()
     lines = [f"📈 <b>Trhy dnes – stav k {local_now.strftime('%H:%M')}</b> <i>(USA ještě obchoduje)</i>"]
-    for group, rows in daily_changes():
+    for group, rows in changes:
         lines += ["", f"<b>{group}</b>"] + [fmt_change_row(*r) for r in rows]
+    if getattr(C, "MARKET_VALUE_EVENING", False):
+        try:
+            value = market_value_text(changes)
+            if value:
+                lines += ["", value]
+        except Exception as e:  # noqa: BLE001
+            log(f"Blok hodnoty trhu selhal: {e}")
+    return "\n".join(lines)
+
+
+def fmt_usd_big(x):
+    """Částka v $ česky: ±1,2 bil. $ / ±412 mld $ / ±850 mil. $."""
+    sign = "+" if x > 0 else ("−" if x < 0 else "")
+    a = abs(x)
+    if a >= 1e12:
+        num, unit = f"{a / 1e12:.2f}", "bil."
+    elif a >= 1e10:
+        num, unit = f"{a / 1e9:.0f}", "mld"
+    elif a >= 1e9:
+        num, unit = f"{a / 1e9:.1f}", "mld"
+    else:
+        num, unit = f"{a / 1e6:.0f}", "mil."
+    return f"{sign}{num.replace('.', ',')} {unit} $"
+
+
+def market_value_change(name, last, chg):
+    """Odhad, kolik $ hodnoty dnes přibylo (+) nebo ubylo (−). None = nepočítá se."""
+    cfg = getattr(C, "MARKET_VALUE", {}).get(name)
+    if not cfg or last is None or chg is None:
+        return None
+    kind, amount = cfg[0], cfg[1]
+    if kind == "cap":
+        return amount * chg / 100
+    if kind == "qty":
+        # last = dnešní cena, ref = včerejší závěr → množství × rozdíl ceny
+        return amount * last * chg / (100 + chg)
+    return None
+
+
+def morning_value_text(local_now):
+    """Ranní zpráva 💰 za předchozí obchodní den (konečné závěry)."""
+    dates = []
+    changes = daily_changes(before=local_now.date(), dates_out=dates)
+    if not dates:
+        return None
+    day = max(dates)
+    title = (f"💰 <b>Kolik $ přibylo / ubylo – {CZ_DAYS[day.weekday()]} {day.day}. {day.month}.</b> "
+             "<i>(odhad, konečné závěry)</i>")
+    return market_value_text(changes, title)
+
+
+def market_value_text(changes, title=None):
+    """Blok „💰 Kolik $ přibylo / ubylo“: indexy, komodity zvlášť a dohromady."""
+    cfg = getattr(C, "MARKET_VALUE", {})
+    lines = [title or "💰 <b>Kolik $ dnes přibylo / ubylo</b> <i>(odhad)</i>"]
+    totals = []
+    for group, rows in changes:
+        group_lines, total, counted = [], 0.0, 0
+        for name, last, chg, _kind in rows:
+            if name not in cfg:
+                continue
+            delta = market_value_change(name, last, chg)
+            note = cfg[name][3]
+            if delta is None:
+                group_lines.append(f"▫️ {html.escape(name)}: <i>data nedostupná</i>")
+                continue
+            arrow = "🟢" if delta > 0 else ("🔴" if delta < 0 else "⚪")
+            extra = f" <i>({html.escape(note)})</i>" if note else ""
+            group_lines.append(f"{arrow} {html.escape(name)}: <b>{fmt_usd_big(delta)}</b>{extra}")
+            if cfg[name][2]:
+                total += delta
+                counted += 1
+        if not group_lines:
+            continue
+        label = group.split(" ", 1)[-1]
+        lines += ["", f"<b>{group}</b>"] + group_lines
+        if counted:
+            lines.append(f"<b>Celkem {label.lower()}: {fmt_usd_big(total)}</b>")
+            totals.append(total)
+    if not totals:
+        return None
+    lines += ["", f"Σ <b>Dohromady: {fmt_usd_big(sum(totals))}</b>",
+              "<i>Indexy = změna tržní kapitalizace (Nasdaq 100 a Dow jsou součástí S&amp;P 500, "
+              "do součtu se nepočítají). Komodity = změna ceny × světové zásoby nebo roční produkce.</i>"]
     return "\n".join(lines)
 
 
@@ -1265,6 +1370,12 @@ def run(args):
             save_state(st, args.state)
             return
 
+    if getattr(args, "value", False):
+        tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+        if not args.test:
+            save_state(st, args.state)
+            return
+
     if args.test:
         run_test(st, tg, items, events, local_now)
         save_state(st, args.state)
@@ -1338,6 +1449,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="nic neposílá, jen vypíše")
     ap.add_argument("--weekly", action="store_true", help="pošle týdenní souhrn hned")
     ap.add_argument("--weeks-back", type=int, default=0, help="souhrn za N týdnů zpět (1 = minulý týden)")
+    ap.add_argument("--value", action="store_true", help="pošle ranní 💰 za včerejšek hned")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 
