@@ -363,11 +363,19 @@ class Telegram:
                     "disable_notification": silent,
                 }
             ).encode()
-            for attempt in range(3):
+            sent = False
+            for _attempt in range(3):
                 req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
                 try:
-                    with urllib.request.urlopen(req, timeout=20) as r:
+                    with urllib.request.urlopen(req, timeout=30) as r:
                         r.read()
+                    sent = True
+                    break
+                except TimeoutError as e:
+                    # Požadavek dorazil, jen Telegram neodpověděl včas → zpráva nejspíš
+                    # odešla. Opakování by poslalo duplikát (stalo se 19. 11.), proto ne.
+                    log(f"Telegram neodpověděl včas ({e}) – považuji za odesláno, neopakuji")
+                    sent = True
                     break
                 except urllib.error.HTTPError as e:
                     detail = e.read().decode(errors="ignore")
@@ -377,9 +385,11 @@ class Telegram:
                         continue
                     log(f"Telegram chyba {e.code}: {detail}")
                     return False
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:  # noqa: BLE001  (spojení se nenavázalo → bezpečné opakovat)
                     log(f"Telegram chyba: {e}")
                     time.sleep(2)
+            if not sent:
+                return False
             time.sleep(0.4)
         return True
 
@@ -453,6 +463,17 @@ def translate(text):
                 out = html.unescape(cand).strip()
         except Exception as e2:  # noqa: BLE001
             log(f"Překlad MyMemory selhal: {e2}")
+    if not out and getattr(C, "TRANSLATE_AI_FALLBACK", True):
+        # Poslední záloha: Claude Haiku (stojí zlomek centu za titulek)
+        cand = call_claude(
+            "Přelož tento finanční titulek z angličtiny do češtiny. Zachovej jména, čísla a zkratky. "
+            "Odpověz jen samotným překladem, bez uvozovek a komentáře.\n\n" + text,
+            max_tokens=1024, model=getattr(C, "TRANSLATE_AI_MODEL", "claude-haiku-5-5"),
+            effort="low", timeout=30,
+        )
+        if cand:
+            out = cand.strip().strip('"„“').splitlines()[0].strip()
+            log("Překlad přes Claude Haiku")
     out = out or text
     _TR_CACHE[text] = out
     return out
@@ -1068,23 +1089,29 @@ def _md_to_html(text):
     return t
 
 
-def call_claude(prompt, max_tokens=1800):
+def call_claude(prompt, max_tokens=1800, model=None, effort=None, timeout=90):
     key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not key:
         return None
-    body = json.dumps({
-        "model": getattr(C, "WEEKLY_AI_MODEL", "claude-sonnet-5-5"),
+    payload = {
+        "model": model or getattr(C, "WEEKLY_AI_MODEL", "claude-sonnet-5-5"),
         "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": prompt}],
-    }).encode()
+    }
+    if effort:
+        payload["output_config"] = {"effort": effort}
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
         data=body,
         headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=90) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read())
+        if data.get("stop_reason") == "refusal":
+            log("Claude API: odmítnuto")
+            return None
         return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip() or None
     except urllib.error.HTTPError as e:
         log(f"Claude API chyba {e.code}: {e.read().decode(errors='ignore')[:300]}")
