@@ -311,3 +311,29 @@ MARKET_VALUE = {
     "Měď":        ("qty", 50.7e9, True, "roční produkce"),  # libry (~23 mil. t/rok)
     "Zemní plyn": ("qty", 39e9, True, "roční produkce USA"),  # MMBtu (Henry Hub ~ US produkce)
 }
+
+# Ranní zpráva „💸 Toky investorů do ETF“ – kolik peněz investoři SKUTEČNĚ vložili / vybrali
+# za předchozí obchodní den. Tok = změna počtu akcií fondu × NAV (cena podílu).
+# Posílá se ve stejné dny jako ranní 💰 (MARKET_VALUE_MORNING_DAYS), jakmile vyjdou data
+# (SPDR zveřejňuje kolem 7:15). Když data do ETF_FLOWS_WAIT_UNTIL hodin nevyjdou, pošle co má.
+ETF_FLOWS_MORNING = True
+ETF_FLOWS_WAIT_UNTIL = 11
+# (skupina, [(ticker, zdroj, popis)])
+#   "ssga"          = SPDR / State Street – stahuje se celá historie (funguje hned)
+#   "ishares:<cesta>" = iShares – jen aktuální stav, bot si ukládá denní snímky
+#                     (první den „sbírám data“, od dalšího dne toky)
+# QQQ (Invesco), VOO (Vanguard) a ropné ETF data zdarma strojově nezveřejňují.
+ETF_FLOWS = [
+    ("📈 Akcie", [
+        ("SPY", "ssga", "S&P 500"),
+        ("IVV", "ishares:239726/ishares-core-sp-500-etf", "S&P 500"),
+        ("SPYM", "ssga", "S&P 500"),
+        ("DIA", "ssga", "Dow Jones"),
+    ]),
+    ("🥇 Komodity (drahé kovy)", [
+        ("GLD", "ssga", "Zlato"),
+        ("IAU", "ishares:239561/ishares-gold-trust-fund", "Zlato"),
+        ("GLDM", "ssga", "Zlato"),
+        ("SLV", "ishares:239855/ishares-silver-trust-fund", "Stříbro"),
+    ]),
+]

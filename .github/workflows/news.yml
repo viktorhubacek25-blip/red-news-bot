@@ -25,6 +25,10 @@ on:
         description: "Poslat večerní přehled (trhy dnes + kalendář na zítřek) hned"
         type: boolean
         default: false
+      flows:
+        description: "Poslat ranní 💸 toky investorů do ETF hned"
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # jen kvůli keepalive commitu (viz poslední krok)
@@ -52,7 +56,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }}
+        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.flows) && '--flows' || '' }}
 
       - name: Uložit stav
         if: always()

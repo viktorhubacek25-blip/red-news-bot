@@ -631,15 +631,19 @@ def _extract_days_json(page):
     raise ValueError("nedokončená data kalendáře")
 
 
-def fetch_html(url):
+def fetch_browser(url, timeout=25):
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/131.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     })
-    with urllib.request.urlopen(req, timeout=25) as r:
-        return r.read().decode("utf-8", "ignore")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def fetch_html(url):
+    return fetch_browser(url).decode("utf-8", "ignore")
 
 
 def ff_week_events(monday):
@@ -828,12 +832,33 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
                 log(f"Ranní 💰 selhalo: {e}")
                 if local_now.hour >= 11:
                     st["value_date"] = today
+        # Ranní 💸 toky do ETF (čeká, až SPDR zveřejní data – obvykle kolem 7:15)
+        if (getattr(C, "ETF_FLOWS_MORNING", False) and local_now.hour >= C.DAILY_SUMMARY_HOUR
+                and st.get("flows_date") != today and st.get("value_date") == today
+                and local_now.weekday() in getattr(C, "MARKET_VALUE_MORNING_DAYS", [1, 2, 3, 4, 5])):
+            final = local_now.hour >= getattr(C, "ETF_FLOWS_WAIT_UNTIL", 11)
+            try:
+                msg, done = etf_flows_text(st, local_now, final=final)
+                if msg:
+                    done = tg.send(msg, silent=silent) or final
+                if done:
+                    st["flows_date"] = today
+            except Exception as e:  # noqa: BLE001
+                log(f"Ranní 💸 selhalo: {e}")
+                if final:
+                    st["flows_date"] = today
     # Večerní přehled na zítřek
     eh = getattr(C, "EVENING_SUMMARY_HOUR", None)
     if eh is not None and local_now.hour >= eh and st.get("evening_date") != today:
         msg = evening_summary(events, local_now, with_markets=True)
         if msg is None or tg.send(msg, silent=silent):
             st["evening_date"] = today
+            # Snímek iShares fondů (záloha, kdyby ranní stažení selhalo)
+            if getattr(C, "ETF_FLOWS_MORNING", False):
+                try:
+                    etf_histories(st)
+                except Exception as e:  # noqa: BLE001
+                    log(f"Snímek ETF selhal: {e}")
             # Hned za ním 💰 za dnešek (jen v pracovní dny)
             if getattr(C, "MARKET_VALUE_EVENING", False) and local_now.weekday() < 5:
                 try:
@@ -1029,6 +1054,163 @@ def market_value_text(changes, title=None):
               "<i>Indexy = změna tržní kapitalizace (Nasdaq 100 a Dow jsou součástí S&amp;P 500, "
               "do součtu se nepočítají). Komodity = změna ceny × světové zásoby nebo roční produkce.</i>"]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 💸 Toky investorů do ETF (skutečně vložené / vybrané peníze)
+# ---------------------------------------------------------------------------
+SSGA_NAV_URL = ("https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/"
+                "etfs/us/navhist-us-en-{t}.xlsx")
+ISHARES_URL = "https://www.ishares.com/us/products/{path}"
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+
+
+def _xlsx_rows(data):
+    """Minimalistické čtení prvního listu .xlsx (bez knihoven) → [{"A": ..., "B": ...}]."""
+    import io
+    import zipfile
+    z = zipfile.ZipFile(io.BytesIO(data))
+    strs = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        ss = z.read("xl/sharedStrings.xml").decode("utf-8", "ignore")
+        strs = [html.unescape("".join(re.findall(r"<t[^>]*>([^<]*)</t>", si)))
+                for si in re.findall(r"<si>(.*?)</si>", ss, re.S)]
+    sheet = z.read("xl/worksheets/sheet1.xml").decode("utf-8", "ignore")
+    rows = []
+    for r in re.findall(r"<row[^>]*>(.*?)</row>", sheet, re.S):
+        row = {}
+        for col, attrs, val in re.findall(
+                r'<c r="([A-Z]+)\d+"([^>]*?)(?:/>|>(?:<f>[^<]*</f>)?(?:<v>([^<]*)</v>)?)', r):
+            if 't="s"' in attrs and val:
+                val = strs[int(val)] if int(val) < len(strs) else ""
+            row[col] = val
+        rows.append(row)
+    return rows
+
+
+def ssga_history(ticker):
+    """{datum: (počet akcií, NAV)} z historie SPDR fondu."""
+    out = {}
+    for row in _xlsx_rows(fetch_browser(SSGA_NAV_URL.format(t=ticker.lower()), timeout=40)):
+        m = re.fullmatch(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", (row.get("A") or "").strip())
+        if not m or m.group(2) not in _MONTHS:
+            continue
+        try:
+            out[datetime(int(m.group(3)), _MONTHS[m.group(2)], int(m.group(1))).date()] = (
+                float(row["C"]), float(row["B"]))
+        except (KeyError, ValueError, TypeError):
+            continue
+    return out
+
+
+def ishares_snapshot(path):
+    """(datum, počet akcií, NAV) z produktové stránky iShares."""
+    page = html.unescape(fetch_browser(ISHARES_URL.format(path=path), timeout=40).decode("utf-8", "ignore"))
+    m = re.search(r'"sharesOutstanding":\{[^{}]*?"formattedValue":"([\d,]+)"[^{}]*?'
+                  r'"formattedAsOfDate":"([A-Za-z]{3}) (\d{1,2}), (\d{4})"', page)
+    n = re.search(r'"value":([\d.]+)[^{}]*?"fullName":"fundHeader\.fundNav\.navAmount"', page)
+    if not m or not n or m.group(2) not in _MONTHS:
+        raise ValueError("na stránce iShares chybí počet akcií nebo NAV")
+    day = datetime(int(m.group(4)), _MONTHS[m.group(2)], int(m.group(3))).date()
+    return day, float(m.group(1).replace(",", "")), float(n.group(1))
+
+
+def etf_histories(st):
+    """Data všech fondů z ETF_FLOWS: {ticker: {datum: (akcie, NAV)}}; iShares doplní snímky do stavu."""
+    snaps = st.setdefault("etf_snap", {})
+    out = {}
+    for _group, funds in getattr(C, "ETF_FLOWS", []):
+        for ticker, src, _label in funds:
+            try:
+                if src == "ssga":
+                    out[ticker] = ssga_history(ticker)
+                    continue
+                if src.startswith("ishares:"):
+                    day, shares, nav = ishares_snapshot(src.split(":", 1)[1])
+                    s = snaps.setdefault(ticker, {})
+                    s[day.isoformat()] = [shares, nav]
+                    for k in sorted(s)[:-15]:
+                        del s[k]
+            except Exception as e:  # noqa: BLE001
+                log(f"ETF {ticker}: {e}")
+            if ticker in snaps:
+                out[ticker] = {datetime.fromisoformat(k).date(): tuple(v) for k, v in snaps[ticker].items()}
+    return out
+
+
+def _prev_weekday(d):
+    d -= timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+def etf_flows_text(st, local_now, final=False, manual=False):
+    """Zpráva 💸 za poslední obchodní den.
+    Vrací (text | None, hotovo: bool). hotovo=False → data ještě nevyšla, zkusit později."""
+    funds_cfg = getattr(C, "ETF_FLOWS", [])
+    hist = etf_histories(st)
+    today = local_now.date()
+    # Obchodní kalendář = dny, za které SPDR zveřejnil data
+    ssga = [t for _g, fs in funds_cfg for t, src, _l in fs if src == "ssga" and hist.get(t)]
+    cal = sorted({d for t in ssga for d in hist[t] if d < today})
+    if not cal:
+        return None, final
+    day = cal[-1]
+    reported = st.setdefault("flows_fund_day", {})
+    if not manual:
+        if day < _prev_weekday(today) and not final:
+            return None, False                      # SPDR za včerejšek ještě nezveřejnil
+        if any(day not in hist[t] for t in ssga) and not final:
+            return None, False                      # některý SPDR fond ještě chybí
+        if st.get("flows_day", "") >= day.isoformat():
+            return None, True                       # tenhle den už byl poslán (např. svátek v USA)
+
+    def prev_day(d):
+        earlier = [x for x in cal if x < d]
+        return earlier[-1] if earlier else None
+
+    lines = [f"💸 <b>Toky investorů do ETF – {CZ_DAYS[day.weekday()]} {day.day}. {day.month}.</b> "
+             "<i>(skutečně vložené / vybrané peníze)</i>"]
+    totals, marks = [], {}
+    for group, funds in funds_cfg:
+        group_lines, total, counted = [], 0.0, 0
+        for ticker, _src, label in funds:
+            h = hist.get(ticker) or {}
+            # nejnovější den ≤ day, který ještě nebyl nahlášen a má předchozí obchodní den
+            cand = [d for d in sorted(h, reverse=True) if d <= day
+                    and (manual or d.isoformat() > reported.get(ticker, ""))
+                    and prev_day(d) in h]
+            name = f"{html.escape(label)} – {ticker}"
+            if not cand:
+                why = "sbírám data" if len(h) < 2 else "data zatím nevyšla"
+                group_lines.append(f"▫️ {name}: <i>{why}</i>")
+                continue
+            d = cand[0]
+            shares, nav = h[d]
+            flow = (shares - h[prev_day(d)][0]) * nav
+            arrow = "🟢" if flow > 0 else ("🔴" if flow < 0 else "⚪")
+            when = "" if d == day else f" <i>(za {CZ_DAYS[d.weekday()][:2]} {d.day}. {d.month}.)</i>"
+            group_lines.append(f"{arrow} {name}: <b>{fmt_usd_big(flow) if flow else '0 $'}</b>{when}")
+            total += flow
+            counted += 1
+            marks[ticker] = d.isoformat()
+        lines += ["", f"<b>{group}</b>"] + group_lines
+        if counted:
+            label = group.split(" ", 1)[-1].split(" (")[0]
+            lines.append(f"<b>Celkem {label.lower()}: {fmt_usd_big(total) if total else '0 $'}</b>")
+            totals.append(total)
+    if not totals:
+        return None, final
+    s = sum(totals)
+    lines += ["", f"Σ <b>Dohromady: {fmt_usd_big(s) if s else '0 $'}</b>",
+              "<i>🟢 = investoři do fondů peníze vložili, 🔴 = vybrali. Tok = změna počtu akcií fondu × NAV. "
+              "Jen velké ETF se zveřejněnými daty (SPDR, iShares); QQQ, VOO a ropné fondy chybí.</i>"]
+    if not manual:
+        reported.update(marks)
+        st["flows_day"] = day.isoformat()
+    return "\n".join(lines), True
 
 
 def weekly_changes(local_now, weeks_back=0):
@@ -1414,9 +1596,12 @@ def run(args):
             save_state(st, args.state)
             return
 
-    if getattr(args, "value", False) or getattr(args, "evening", False):
+    if getattr(args, "value", False) or getattr(args, "evening", False) or getattr(args, "flows", False):
         if args.value:
             tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+        if args.flows:
+            msg, _ = etf_flows_text(st, local_now, final=True, manual=True)
+            tg.send(msg or "💸 Data o tocích do ETF zatím nejsou k dispozici.")
         if args.evening:
             msg = evening_summary(daily_only(events), local_now, with_markets=True)
             tg.send(msg or "📅 Večerní přehled: nic k odeslání.")
@@ -1501,6 +1686,7 @@ def main():
     ap.add_argument("--weeks-back", type=int, default=0, help="souhrn za N týdnů zpět (1 = minulý týden)")
     ap.add_argument("--value", action="store_true", help="pošle ranní 💰 za včerejšek hned")
     ap.add_argument("--evening", action="store_true", help="pošle večerní přehled (trhy + zítřek) hned")
+    ap.add_argument("--flows", action="store_true", help="pošle ranní 💸 toky do ETF hned")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 
