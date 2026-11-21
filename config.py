@@ -79,6 +79,8 @@ SOURCES = [
     {"name": "GN Makro data", "url": _gnews('(CPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")'), "trust": 0, "google": True},
     {"name": "GN Komodity", "url": _gnews('(oil OR crude OR OPEC OR gold OR Brent)'), "trust": 0, "google": True},
     {"name": "GN Trhy & geopolitika", "url": _gnews('(tariffs OR sanctions OR "Treasury yields" OR "dollar" OR "Wall Street" OR selloff)'), "trust": 0, "google": True},
+    # Velké tech / AI firmy (hýbou Nasdaqem a S&P 500) – projdou jen zprávy s katalyzátorem, viz COMPANY_WATCH
+    {"name": "GN Tech & AI", "url": _gnews('(Nvidia OR Apple OR Microsoft OR Alphabet OR Google OR Amazon OR Meta OR Tesla OR Broadcom OR AMD OR TSMC OR OpenAI OR Anthropic)'), "trust": 0, "google": True},
 ]
 
 # Bonus za původního vydavatele (u Google News se pozná z tagu <source>)
@@ -174,6 +176,55 @@ REQUIRE_RELEVANCE = (
     r"|\bSchmid\b|\bMiran\b|\bBostic\b|\bHarker\b|\bWilliams\b|\bCollins\b"
 )
 
+# ---------------------------------------------------------------------------
+# VELKÉ TECH / AI FIRMY – hýbou Nasdaqem a S&P 500 (Nvidia sama je ~8 % S&P 500)
+# Samotná zmínka firmy dá jen "weight" bodů (nestačí). Projde, až když titulek
+# obsahuje i katalyzátor: vyšetřování, CEO, výsledky, čipy do Číny, velký pohyb akcie…
+# ---------------------------------------------------------------------------
+COMPANY_WATCH = {
+    "weight": 4,
+    "companies": [
+        ("Nvidia", r"\bNvidia\b|\bNVDA\b|\bJensen Huang\b|\bHuang\b"),
+        ("Apple", r"\bApple\b|\bAAPL\b|\bTim Cook\b"),
+        ("Microsoft", r"\bMicrosoft\b|\bMSFT\b|\bNadella\b"),
+        ("Alphabet", r"\bAlphabet\b|\bGoogle\b|\bGOOGL?\b|\bPichai\b|\bDeepMind\b"),
+        ("Amazon", r"\bAmazon\b|\bAMZN\b|\bAWS\b|\bJassy\b"),
+        ("Meta", r"\bMeta\b|\bZuckerberg\b"),
+        ("Tesla", r"\bTesla\b|\bTSLA\b"),
+        ("Broadcom", r"\bBroadcom\b|\bAVGO\b"),
+        ("AMD", r"\bAMD\b|\bAdvanced Micro\b|\bLisa Su\b"),
+        ("TSMC", r"\bTSMC\b|\bTaiwan Semiconductor\b"),
+        ("Micron", r"\bMicron\b"),
+        ("ASML", r"\bASML\b"),
+        ("Oracle", r"\bOracle\b"),
+        ("Palantir", r"\bPalantir\b"),
+        ("CoreWeave", r"\bCoreWeave\b"),
+        ("OpenAI", r"\bOpenAI\b|\bAltman\b"),
+        ("Anthropic", r"\bAnthropic\b"),
+    ],
+    # (váha, [vzory]) – počítají se JEN když titulek zmiňuje některou firmu výše
+    "groups": [
+        # silné katalyzátory
+        (5, [
+            r"\bSEC\b|\bDOJ\b|\bJustice Department\b|\bFTC\b|\bantitrust\b|\bsubpoena\w*|\bprob(e|es|ed|ing)\b|\binvestigat\w*|\bscrutiny\b|\bfraud\b|\baccounting\b|\bindict\w*|\bcharged\b",
+            r"\bexport (controls?|curbs?|rules?|bans?|licen[cs]es?)\b|\bchips?\b.*\bChin(a|ese)\b|\bChin(a|ese)\b.*\bchips?\b|\bsmuggl\w*|\bHuawei\b",
+            r"\b(CEO|chief executive|CFO)\b.*\b(resign|steps? down|ousted|fired|depart|exit|leav|quit|replac|successor|interim|reinstat|return)\w*|\b(new|interim|former|ex-) ?(CEO|chief executive|boss)\b|\bresign\w*|\bsteps? down\b|\bousted\b|\bdeparture\b|\brehir\w*|\breinstat\w*",
+            r"\bearnings\b|\bresults\b|\bguidance\b|\boutlook\b|\bforecast\w*\b|\brevenue\b|\bquarterly\b|\bprofit warning\b|\bbeats?\b.*\bestimates\b|\bmiss(es|ed)?\b.*\bestimates\b",
+            r"\bshort[- ]?sellers?\b|\bhalt(s|ed)?\b|\bdelist\w*|\bdebut\b|\bmarket (value|cap\w*)\b|\$\d+(\.\d+)? ?(billion|trillion|bn|tn)\b.*\b(wiped|erased|lost|shed)\b",
+        ]),
+        # velký pohyb akcie (≥ 5 %)
+        (4, [r"\b([5-9]|[1-9]\d)(\.\d+)?\s?(%|percent\b)"]),
+        # pohyb akcie
+        (3, [r"\bshares\b.*\b(fall|fell|slide|slid|drop|sink|sank|slump|tumble|plunge|jump|rise|rose|rall|surge|soar|climb|gain|retreat|down|up)\w*|\b(falls|slides|drops|sinks|slumps|tumbles|plunges|jumps|surges|soars|retreats|rallies|stumbles?|sell-?off|rout)\b"]),
+        # slabé – samy nestačí
+        (2, [r"\bChin(a|ese)\b|\blawsuits?\b|\bsues?\b|\bsued\b|\bboard\b|\bacqui(re|res|red|sition)\b|\bmerger\b|\bstake\b|\bbuyback\b|\blayoffs?\b"]),
+    ],
+    # Po odeslání zprávy o firmě dalších N hodin nic dalšího o ní (různé agentury
+    # píšou o tomtéž příběhu jinými slovy). Zprávy se skóre 99 projdou vždy.
+    "cooldown_hours": 1.5,
+}
+REQUIRE_RELEVANCE += "|" + "|".join(p for _n, p in COMPANY_WATCH["companies"])
+
 # Headline s výsledkem dat ("US CPI 3.1% vs 3.0% expected")
 DATA_RELEASE_PATTERN = r"(\bactual\b|\bvs\.?\b|\bversus\b).*(\bexp(ected)?\b|\best(imate)?\b|\bforecast\b|\bconsensus\b|\bprior\b|\bprev(ious)?\b)"
 DATA_RELEASE_BONUS = 3
@@ -186,7 +237,7 @@ CALENDAR_MATCH_BONUS = 5
 # Tyto vzory skóre výrazně sníží (šum, analýzy, reklama, krypto…)
 NEGATIVE_PATTERNS = [
     r"\bpreview\b", r"\bweek ahead\b", r"\bwhat to (watch|expect)\b", r"\bopinion\b", r"\bcolumn\b",
-    r"\bpodcast\b", r"\bvideo\b", r"\bwatch:\b", r"\bsponsored\b", r"\bbrokers?\b", r"\bwrap\b",
+    r"\bpodcast\b", r"\bvideo\b", r"\bwatch:\b", r"^watch\b", r"\| (Closing Bell|The Close|Bloomberg)\b", r"\bsponsored\b", r"\bbrokers?\b", r"\bwrap\b",
     r"\brecap\b", r"\bexplainer\b", r"\bnewsletter\b", r"\btechnical analysis\b", r"\btradeCompass\b",
     r"\bbitcoin\b|\bcrypto\b|\bethereum\b", r"\bhow to\b", r"\bcertified\b", r"\bIPO\b",
     r"\bstocks? to (buy|watch)\b", r"\bdividend\b", r"\bmortgage rates? today\b",
@@ -211,6 +262,7 @@ ASSET_TAGS = [
     ("💵 USD", r"\bdollar\b|\bDXY\b|\bUSD\b|\bFed\b|\bFOMC\b|\bPowell\b|\bTreasur|\byields?\b|(?-i:\bUS\b)|\bCPI\b|\bpayrolls?\b|\bPCE\b|\bnon-?farm\b"),
     ("📈 Indexy", r"\bS&P\b|\bNasdaq\b|\bDow\b|\bstocks?\b|\bequit|\bWall Street\b|\bindex\b|\bindices\b|\bVIX\b|\bDAX\b|\bNikkei\b"),
     ("🛢 Komodity", r"\boil\b|\bcrude\b|\bBrent\b|\bWTI\b|\bOPEC\b|\bgold\b|\bsilver\b|\bcopper\b|\bnatural gas\b|\bEIA\b"),
+    ("💻 Tech/AI", "|".join(p for _n, p in COMPANY_WATCH["companies"])),
 ]
 
 # ---------------------------------------------------------------------------
@@ -262,6 +314,7 @@ WEEKLY_NEWS_QUERIES = [
     '(CPI OR PPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")',
     '(oil OR crude OR OPEC OR gold OR Brent OR copper OR "natural gas")',
     '(tariffs OR sanctions OR "Treasury yields" OR dollar OR "Wall Street" OR stocks)',
+    '(Nvidia OR Apple OR Microsoft OR Alphabet OR Amazon OR Meta OR Tesla OR Broadcom OR AMD OR TSMC OR OpenAI OR Anthropic)',
 ]
 
 # Sledovaná aktiva: (skupina, [(název, Yahoo symbol, Stooq symbol, typ)])

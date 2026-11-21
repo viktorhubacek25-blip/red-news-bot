@@ -56,6 +56,11 @@ NEG_RE = [re.compile(p, FLAGS_I) for p in C.NEGATIVE_PATTERNS]
 DATA_RE = re.compile(C.DATA_RELEASE_PATTERN, FLAGS_I)
 TAGS_RE = [(label, re.compile(p, FLAGS_I)) for label, p in C.ASSET_TAGS]
 TOPICS_RE = [(n, re.compile(p, FLAGS_I), h) for n, p, h in getattr(C, "TOPIC_COOLDOWNS", [])]
+_CW = getattr(C, "COMPANY_WATCH", None) or {}
+COMPANIES_RE = [(n, re.compile(p, FLAGS_I)) for n, p in _CW.get("companies", [])]
+CW_GROUPS_RE = [(w, [re.compile(p, FLAGS_I) for p in pats]) for w, pats in _CW.get("groups", [])]
+if _CW.get("cooldown_hours"):
+    TOPICS_RE += [(f"firma {n}", r, _CW["cooldown_hours"]) for n, r in COMPANIES_RE]
 CAL_ALWAYS_RE = [re.compile(p, FLAGS_I) for p in C.CALENDAR_ALWAYS]
 
 
@@ -301,6 +306,16 @@ def score_item(item, active_events, relevance=True):
         if hits:
             score += min(hits * weight, 2 * weight)
             reasons.append(f"+{min(hits * weight, 2 * weight)}")
+    # Velké tech / AI firmy: zmínka + katalyzátory (vyšetřování, CEO, výsledky, Čína…)
+    company = next((n for n, r in COMPANIES_RE if r.search(t)), None)
+    if company:
+        score += _CW.get("weight", 0)
+        reasons.append(f"{company}+{_CW.get('weight', 0)}")
+        for weight, pats in CW_GROUPS_RE:
+            hits = sum(1 for r in pats if r.search(t))
+            if hits:
+                score += min(hits * weight, 2 * weight)
+                reasons.append(f"kat+{min(hits * weight, 2 * weight)}")
     if DATA_RE.search(t) and re.search(r"\d", t):
         score += C.DATA_RELEASE_BONUS
         reasons.append("data")
