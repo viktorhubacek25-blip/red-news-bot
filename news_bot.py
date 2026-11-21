@@ -1595,12 +1595,71 @@ def select_alerts(st, items, active_events):
     return picked
 
 
+def replay(tg, start, end):
+    """Pošle zprávy, které vyšly v okně start–end (místní čas) a prošly by aktuálním skórováním.
+    Bere je z Google News (FinancialJuice apod. drží jen posledních pár hodin)."""
+    items = []
+    for src in C.SOURCES:
+        if not src.get("query"):
+            continue
+        # Google vrací max. 100 výsledků za dotaz (z celého týdne) → každý výraz z „(A OR B …)“ zvlášť
+        terms = [x.strip() for x in src["query"].strip("()").split(" OR ") if x.strip()]
+        for term in terms:
+            url = C.gnews_range(term, start.date().isoformat(), (end.date() + timedelta(days=1)).isoformat())
+            try:
+                time.sleep(1.2)
+                items += parse_feed(fetch(url), src)
+            except Exception as e:  # noqa: BLE001
+                log(f"FAIL replay {src['name']} {term}: {e}")
+    t0, t1 = start.timestamp(), end.timestamp()
+    picked, toks, links, below = [], [], set(), []
+    for it in sorted(items, key=lambda x: x.get("published") or 0):
+        if not (it.get("published") and t0 <= it["published"] < t1) or it.get("link") in links:
+            continue
+        score, reasons = score_item(it, [])
+        if score < C.SCORE_THRESHOLD:
+            if score >= 5:
+                below.append((score, it))
+            continue
+        tk = tokens(it["title"])
+        if any(similarity(tk, t) >= C.DUPLICATE_SIMILARITY for t in toks):
+            continue
+        toks.append(tk)
+        links.add(it.get("link"))
+        picked.append((score, it))
+        log(f"REPLAY [{score}] {it['title']}  {reasons}")
+    when = f"{start.day}. {start.month}. {start:%H:%M}–{end:%H:%M}"
+    head = (f"🔁 <b>Zpětná ukázka: zprávy z {when}</b> <i>(podle aktuálních pravidel, "
+            f"jen Google News – {len(picked)} zpráv nad prahem)</i>")
+    if not picked and below:
+        # nic by neprošlo → pro představu nejlepší zprávy pod prahem
+        best, toks = [], []
+        for score, it in sorted(below, key=lambda x: -x[0]):
+            tk = tokens(it["title"])
+            if any(similarity(tk, t) >= C.DUPLICATE_SIMILARITY for t in toks):
+                continue
+            toks.append(tk)
+            best.append((score, it))
+        picked = sorted(best[:5], key=lambda x: x[1]["published"])
+        head += (f"\n<i>Nic nepřekročilo práh {C.SCORE_THRESHOLD} – níže {len(picked)} nejlépe hodnocených, "
+                 "které by normálně NEPŘIŠLY.</i>")
+    tg.send(head)
+    for score, it in picked:
+        tg.send(format_alert(it, score), silent=True)
+
+
 def run(args):
     st = load_state(args.state)
     tg = Telegram(dry_run=args.dry_run)
     local_now = datetime.now(TZ)
     silent = is_quiet(local_now)
     health_alerts = []
+
+    if getattr(args, "replay_from", None):
+        start = datetime.strptime(args.replay_from.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+        end = datetime.strptime(args.replay_to.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=TZ)
+        replay(tg, start, end)
+        return
 
     events, _ = refresh_calendar(st, force=args.test)
     items = collect_items(st, health_alerts)
@@ -1702,6 +1761,8 @@ def main():
     ap.add_argument("--value", action="store_true", help="pošle ranní 💰 za včerejšek hned")
     ap.add_argument("--evening", action="store_true", help="pošle večerní přehled (trhy + zítřek) hned")
     ap.add_argument("--flows", action="store_true", help="pošle ranní 💸 toky do ETF hned")
+    ap.add_argument("--replay-from", help="zpětná ukázka zpráv od (místní čas, 'YYYY-MM-DD HH:MM')")
+    ap.add_argument("--replay-to", help="… do (místní čas, 'YYYY-MM-DD HH:MM')")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
     run(ap.parse_args())
 

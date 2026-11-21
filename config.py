@@ -75,12 +75,12 @@ SOURCES = [
     # Trumpovy příspěvky z Truth Social (archiv trumpstruth.org) – projdou jen ty o trzích
     {"name": "Trump (Truth Social)", "url": "https://trumpstruth.org/feed", "trust": 0, "trump": True},
     # Google News filtrovaný jen na top agentury (Reuters, Bloomberg, WSJ, FT, CNBC, AP)
-    {"name": "GN Centrální banky", "url": _gnews('(Fed OR FOMC OR Powell OR "rate cut" OR "rate hike" OR ECB OR "Bank of Japan")'), "trust": 0, "google": True},
-    {"name": "GN Makro data", "url": _gnews('(CPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")'), "trust": 0, "google": True},
-    {"name": "GN Komodity", "url": _gnews('(oil OR crude OR OPEC OR gold OR Brent)'), "trust": 0, "google": True},
-    {"name": "GN Trhy & geopolitika", "url": _gnews('(tariffs OR sanctions OR "Treasury yields" OR "dollar" OR "Wall Street" OR selloff)'), "trust": 0, "google": True},
+    {"name": "GN Centrální banky", "url": _gnews('(Fed OR FOMC OR Powell OR "rate cut" OR "rate hike" OR ECB OR "Bank of Japan")'), "query": '(Fed OR FOMC OR Powell OR "rate cut" OR "rate hike" OR ECB OR "Bank of Japan")', "trust": 0, "google": True},
+    {"name": "GN Makro data", "url": _gnews('(CPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")'), "query": '(CPI OR inflation OR payrolls OR "jobs report" OR GDP OR PCE OR "retail sales")', "trust": 0, "google": True},
+    {"name": "GN Komodity", "url": _gnews('(oil OR crude OR OPEC OR gold OR Brent)'), "query": '(oil OR crude OR OPEC OR gold OR Brent)', "trust": 0, "google": True},
+    {"name": "GN Trhy & geopolitika", "url": _gnews('(tariffs OR sanctions OR "Treasury yields" OR "dollar" OR "Wall Street" OR selloff)'), "query": '(tariffs OR sanctions OR "Treasury yields" OR "dollar" OR "Wall Street" OR selloff)', "trust": 0, "google": True},
     # Velké tech / AI firmy (hýbou Nasdaqem a S&P 500) – projdou jen zprávy s katalyzátorem, viz COMPANY_WATCH
-    {"name": "GN Tech & AI", "url": _gnews('(Nvidia OR Apple OR Microsoft OR Alphabet OR Google OR Amazon OR Meta OR Tesla OR Broadcom OR AMD OR TSMC OR OpenAI OR Anthropic)'), "trust": 0, "google": True},
+    {"name": "GN Tech & AI", "url": _gnews('(Nvidia OR Apple OR Microsoft OR Alphabet OR Google OR Amazon OR Meta OR Tesla OR Broadcom OR AMD OR TSMC OR OpenAI OR Anthropic)'), "query": '(Nvidia OR Apple OR Microsoft OR Alphabet OR Google OR Amazon OR Meta OR Tesla OR Broadcom OR AMD OR TSMC OR OpenAI OR Anthropic)', "trust": 0, "google": True},
 ]
 
 # Bonus za původního vydavatele (u Google News se pozná z tagu <source>)
@@ -215,7 +215,7 @@ COMPANY_WATCH = {
         # velký pohyb akcie (≥ 5 %)
         (4, [r"\b([5-9]|[1-9]\d)(\.\d+)?\s?(%|percent\b)"]),
         # pohyb akcie
-        (3, [r"\bshares\b.*\b(fall|fell|slide|slid|drop|sink|sank|slump|tumble|plunge|jump|rise|rose|rall|surge|soar|climb|gain|retreat|down|up)\w*|\b(falls|slides|drops|sinks|slumps|tumbles|plunges|jumps|surges|soars|retreats|rallies|stumbles?|sell-?off|rout)\b"]),
+        (3, [r"\bshares\b.*\b(fall|fell|slide|slid|drop|sink|sank|slump|tumble|plunge|jump|rise|rose|rall|surge|soar|climb|gain|retreat|tank|dive|down|up)\w*|\b(falls|slides|drops|sinks|slumps|tumbles|plunges|jumps|surges|soars|retreats|rallies|stumbles?|tanks?|dives?|craters?|sell-?off|rout)\b"]),
         # slabé – samy nestačí
         (2, [r"\bChin(a|ese)\b|\blawsuits?\b|\bsues?\b|\bsued\b|\bboard\b|\bacqui(re|res|red|sition)\b|\bmerger\b|\bstake\b|\bbuyback\b|\blayoffs?\b"]),
     ],

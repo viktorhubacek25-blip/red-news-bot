@@ -29,6 +29,14 @@ on:
         description: "Poslat ranní 💸 toky investorů do ETF hned"
         type: boolean
         default: false
+      replay_from:
+        description: "Zpětná ukázka zpráv OD (místní čas, např. 2026-11-20 15:30) – jinak nechat prázdné"
+        type: string
+        default: ""
+      replay_to:
+        description: "Zpětná ukázka zpráv DO (místní čas, např. 2026-11-20 16:30)"
+        type: string
+        default: ""
 
 permissions:
   contents: write   # jen kvůli keepalive commitu (viz poslední krok)
@@ -56,7 +64,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python3 news_bot.py ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.flows) && '--flows' || '' }}
+          REPLAY_FROM: ${{ github.event_name == 'workflow_dispatch' && inputs.replay_from || '' }}
+          REPLAY_TO: ${{ github.event_name == 'workflow_dispatch' && inputs.replay_to || '' }}
+        run: python3 news_bot.py ${REPLAY_FROM:+--replay-from "$REPLAY_FROM" --replay-to "$REPLAY_TO"} ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.flows) && '--flows' || '' }}
 
       - name: Uložit stav
         if: always()
