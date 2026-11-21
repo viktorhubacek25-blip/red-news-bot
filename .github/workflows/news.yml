@@ -29,6 +29,10 @@ on:
         description: "Poslat ranní 💸 toky investorů do ETF hned"
         type: boolean
         default: false
+      digest:
+        description: "Poslat souhrn zpráv dne po kategoriích hned"
+        type: boolean
+        default: false
       replay_from:
         description: "Zpětná ukázka zpráv OD (místní čas, např. 2026-11-20 15:30) – jinak nechat prázdné"
         type: string
@@ -66,7 +70,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           REPLAY_FROM: ${{ github.event_name == 'workflow_dispatch' && inputs.replay_from || '' }}
           REPLAY_TO: ${{ github.event_name == 'workflow_dispatch' && inputs.replay_to || '' }}
-        run: python3 news_bot.py ${REPLAY_FROM:+--replay-from "$REPLAY_FROM" --replay-to "$REPLAY_TO"} ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.flows) && '--flows' || '' }}
+        run: python3 news_bot.py ${REPLAY_FROM:+--replay-from "$REPLAY_FROM" --replay-to "$REPLAY_TO"} ${{ (github.event_name == 'workflow_dispatch' && inputs.test) && '--test' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly) && '--weekly' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.weekly_last) && '--weeks-back 1' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.value) && '--value' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.evening) && '--evening' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.flows) && '--flows' || '' }} ${{ (github.event_name == 'workflow_dispatch' && inputs.digest) && '--digest' || '' }}
 
       - name: Uložit stav
         if: always()

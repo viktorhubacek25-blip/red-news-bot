@@ -206,7 +206,9 @@ COMPANY_WATCH = {
     "groups": [
         # silné katalyzátory
         (5, [
-            r"\bSEC\b|\bDOJ\b|\bJustice Department\b|\bFTC\b|\bantitrust\b|\bsubpoena\w*|\bprob(e|es|ed|ing)\b|\binvestigat\w*|\bscrutiny\b|\bfraud\b|\baccounting\b|\bindict\w*|\bcharged\b",
+            # úřad + úkon se počítají zvlášť („SEC vyšetřuje účetnictví“ = 2 katalyzátory)
+            r"\bSEC\b|\bDOJ\b|\bJustice Department\b|\bFTC\b|\bantitrust\b|\bregulators?\b|\battorney general\b",
+            r"\bsubpoena\w*|\bprob(e|es|ed|ing)\b|\binvestigat\w*|\bscrutiny\b|\bfraud\b|\baccounting\b|\bindict\w*|\bcharged\b",
             r"\bexport (controls?|curbs?|rules?|bans?|licen[cs]es?)\b|\bchips?\b.*\bChin(a|ese)\b|\bChin(a|ese)\b.*\bchips?\b|\bsmuggl\w*|\bHuawei\b",
             r"\b(CEO|chief executive|CFO)\b.*\b(resign|steps? down|ousted|fired|depart|exit|leav|quit|replac|successor|interim|reinstat|return)\w*|\b(new|interim|former|ex-) ?(CEO|chief executive|boss)\b|\bresign\w*|\bsteps? down\b|\bousted\b|\bdeparture\b|\brehir\w*|\breinstat\w*",
             r"\bearnings\b|\bresults\b|\bguidance\b|\boutlook\b|\bforecast\w*\b|\brevenue\b|\bquarterly\b|\bprofit warning\b|\bbeats?\b.*\bestimates\b|\bmiss(es|ed)?\b.*\bestimates\b",
@@ -237,7 +239,7 @@ CALENDAR_MATCH_BONUS = 5
 # Tyto vzory skóre výrazně sníží (šum, analýzy, reklama, krypto…)
 NEGATIVE_PATTERNS = [
     r"\bpreview\b", r"\bweek ahead\b", r"\bwhat to (watch|expect)\b", r"\bopinion\b", r"\bcolumn\b",
-    r"\bpodcast\b", r"\bvideo\b", r"\bwatch:\b", r"^watch\b", r"\| (Closing Bell|The Close|Bloomberg)\b", r"\bsponsored\b", r"\bbrokers?\b", r"\bwrap\b",
+    r"\bpodcast\b", r"\bvideo\b", r"^inside\b", r"\bDealBook\b", r"\bfact check\b", r"\bwatch:\b", r"^watch\b", r"\| (Closing Bell|The Close|Bloomberg)\b", r"\bsponsored\b", r"\bbrokers?\b", r"\bwrap\b",
     r"\brecap\b", r"\bexplainer\b", r"\bnewsletter\b", r"\btechnical analysis\b", r"\btradeCompass\b",
     r"\bbitcoin\b|\bcrypto\b|\bethereum\b", r"\bhow to\b", r"\bcertified\b", r"\bIPO\b",
     r"\bstocks? to (buy|watch)\b", r"\bdividend\b", r"\bmortgage rates? today\b",
@@ -389,4 +391,19 @@ ETF_FLOWS = [
         ("GLDM", "ssga", "Zlato"),
         ("SLV", "ishares:239855/ishares-silver-trust-fund", "Stříbro"),
     ]),
+]
+
+# Souhrn zpráv dne po kategoriích – po zavření US trhu (22:00), po–pá.
+# Bere titulky top agentur z Google News za celý den, vybere nejdůležitější podle skóre.
+DAY_DIGEST_HOUR = 23            # místní čas, hodina zavření US trhu je 22:00 (None = vypnuto); např. 22.5 = 22:30
+DAY_DIGEST_DAYS = [0, 1, 2, 3, 4]
+DAY_DIGEST_MIN_SCORE = 5        # slabší titulky se do souhrnu nedostanou
+DAY_DIGEST_PER_COMPANY = 2      # max. zpráv o jedné firmě (Nvidia, Anthropic…), ať je souhrn pestrý
+# (nadpis, regex, max. počet zpráv) – titulek patří do PRVNÍ kategorie, která sedí (pořadí je důležité)
+DAY_DIGEST_CATEGORIES = [
+    ("💻 AI / tech", "|".join(p for _n, p in COMPANY_WATCH["companies"]) + r"|\bAI\b|\bchips?\b|\bsemiconductors?\b", 5),
+    ("🏦 Fed / dolar", r"\bFed\b|\bFed's\b|\bFOMC\b|\bPowell\b|\brate (hike|cut)s?\b|\bTreasur(y|ies)\b|\byields?\b|\bdollar\b|\binflation\b|\bCPI\b|\bPCE\b|\bpayrolls?\b|\bjobs\b|\bGDP\b|\bretail sales\b|\bBessent\b", 3),
+    ("🛢 Komodity", r"\boil\b|\bcrude\b|\bBrent\b|\bWTI\b|\bOPEC\b|\bgold\b|\bsilver\b|\bcopper\b|\bnatural gas\b|\btankers?\b|\brefiner\w*", 2),
+    ("📈 Akcie", r"\bWall Street\b|\bstocks?\b|\bS&P\b|\bNasdaq\b|\bDow\b|\bVIX\b|\bvolatility\b|\bequit\w*|\bsell-?off\b", 2),
+    ("🌍 Geopolitika", r"\bIran\w*|\bIsrael\w*|\bRussia\w*|\bUkrain\w*|\bChina\b|\bChinese\b|\bXi\b|\bPutin\b|\btariffs?\b|\bsanctions?\b|\bHormuz\b|\bmissiles?\b|\battacks?\b|\bHouthis?\b", 2),
 ]

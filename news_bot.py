@@ -882,6 +882,17 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
                         tg.send(value, silent=silent)
                 except Exception as e:  # noqa: BLE001
                     log(f"Večerní 💰 selhalo: {e}")
+    # Souhrn zpráv dne po kategoriích (po zavření US trhu)
+    dh = getattr(C, "DAY_DIGEST_HOUR", None)
+    if (dh is not None and (local_now.hour, local_now.minute) >= (int(dh), round(dh % 1 * 60))
+            and st.get("digest_date") != today
+            and local_now.weekday() in getattr(C, "DAY_DIGEST_DAYS", [0, 1, 2, 3, 4])):
+        try:
+            msg = day_digest_text(local_now)
+            if msg is None or tg.send(msg, silent=silent):
+                st["digest_date"] = today
+        except Exception as e:  # noqa: BLE001
+            log(f"Souhrn dne selhal (zkusím příště): {e}")
     # Upozornění před událostí (seskupené podle času)
     t = time.time()
     due = [
@@ -1595,27 +1606,82 @@ def select_alerts(st, items, active_events):
     return picked
 
 
-def replay(tg, start, end):
-    """Pošle zprávy, které vyšly v okně start–end (místní čas) a prošly by aktuálním skórováním.
-    Bere je z Google News (FinancialJuice apod. drží jen posledních pár hodin)."""
-    items = []
+def gnews_window(start, end):
+    """Titulky top agentur z Google News, které vyšly v okně start–end (místní čas)."""
+    items, fails = [], 0
     for src in C.SOURCES:
         if not src.get("query"):
             continue
         # Google vrací max. 100 výsledků za dotaz (z celého týdne) → každý výraz z „(A OR B …)“ zvlášť
         terms = [x.strip() for x in src["query"].strip("()").split(" OR ") if x.strip()]
-        for term in terms:
+        for term in [src["query"]] + (terms if len(terms) > 1 else []):
             url = C.gnews_range(term, start.date().isoformat(), (end.date() + timedelta(days=1)).isoformat())
             try:
                 time.sleep(1.2)
                 items += parse_feed(fetch(url), src)
             except Exception as e:  # noqa: BLE001
-                log(f"FAIL replay {src['name']} {term}: {e}")
+                fails += 1
+                log(f"FAIL Google News {src['name']} {term}: {e}")
     t0, t1 = start.timestamp(), end.timestamp()
+    out, seen = [], set()
+    for it in items:
+        key = it.get("link") or it["title"]
+        if it.get("published") and t0 <= it["published"] < t1 and key not in seen:
+            seen.add(key)
+            out.append(it)
+    if fails and not out:
+        raise RuntimeError(f"Google News: {fails} dotazů selhalo")
+    return out
+
+
+def day_digest_text(local_now):
+    """Souhrn zpráv dne po kategoriích (DAY_DIGEST_CATEGORIES), nejdůležitější podle skóre."""
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    items = gnews_window(start, local_now)
+    cats = [(label, re.compile(pat, FLAGS_I), n) for label, pat, n in getattr(C, "DAY_DIGEST_CATEGORIES", [])]
+    min_score = getattr(C, "DAY_DIGEST_MIN_SCORE", 5)
+    buckets = {label: [] for label, _r, _n in cats}
+    toks, per_company = [], {}
+    max_company = getattr(C, "DAY_DIGEST_PER_COMPANY", 99)
+    for it in sorted(items, key=lambda x: -score_item(x, [], relevance=False)[0]):
+        score = score_item(it, [], relevance=False)[0]
+        if score < min_score:
+            break
+        cat = next(((label, n) for label, r, n in cats if r.search(it["title"])), None)
+        if not cat or len(buckets[cat[0]]) >= cat[1]:
+            continue
+        company = next((n for n, r in COMPANIES_RE if r.search(it["title"])), None)
+        if company and per_company.get(company, 0) >= max_company:
+            continue
+        tk = tokens(it["title"])
+        if any(similarity(tk, t) >= C.DUPLICATE_SIMILARITY for t in toks):
+            continue
+        toks.append(tk)
+        if company:
+            per_company[company] = per_company.get(company, 0) + 1
+        buckets[cat[0]].append(it)
+    if not any(buckets.values()):
+        return None
+    lines = [f"🗞 <b>Souhrn zpráv – {CZ_DAYS[local_now.weekday()]} {local_now.day}. {local_now.month}.</b>"]
+    for label, _r, _n in cats:
+        if not buckets[label]:
+            continue
+        lines += ["", f"<b>{label}</b>"]
+        for it in sorted(buckets[label], key=lambda x: x["published"]):
+            shown, _orig = display_title(it)
+            pub = html.escape(it.get("publisher") or it.get("source") or "")
+            if it.get("link"):
+                pub = f'<a href="{html.escape(it["link"], quote=True)}">{pub or "odkaz"}</a>'
+            lines.append(f"• <i>{fmt_time(it['published'])}</i> {html.escape(shown)} — {pub}")
+    return "\n".join(lines)
+
+
+def replay(tg, start, end):
+    """Pošle zprávy, které vyšly v okně start–end (místní čas) a prošly by aktuálním skórováním.
+    Bere je z Google News (FinancialJuice apod. drží jen posledních pár hodin)."""
+    items = gnews_window(start, end)
     picked, toks, links, below = [], [], set(), []
     for it in sorted(items, key=lambda x: x.get("published") or 0):
-        if not (it.get("published") and t0 <= it["published"] < t1) or it.get("link") in links:
-            continue
         score, reasons = score_item(it, [])
         if score < C.SCORE_THRESHOLD:
             if score >= 5:
@@ -1670,9 +1736,12 @@ def run(args):
             save_state(st, args.state)
             return
 
-    if getattr(args, "value", False) or getattr(args, "evening", False) or getattr(args, "flows", False):
+    if getattr(args, "value", False) or getattr(args, "evening", False) or getattr(args, "flows", False) \
+            or getattr(args, "digest", False):
         if args.value:
             tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+        if args.digest:
+            tg.send(day_digest_text(local_now) or "🗞 Souhrn zpráv: dnes nic k odeslání.")
         if args.flows:
             msg, _ = etf_flows_text(st, local_now, final=True, manual=True)
             tg.send(msg or "💸 Data o tocích do ETF zatím nejsou k dispozici.")
@@ -1761,6 +1830,7 @@ def main():
     ap.add_argument("--value", action="store_true", help="pošle ranní 💰 za včerejšek hned")
     ap.add_argument("--evening", action="store_true", help="pošle večerní přehled (trhy + zítřek) hned")
     ap.add_argument("--flows", action="store_true", help="pošle ranní 💸 toky do ETF hned")
+    ap.add_argument("--digest", action="store_true", help="pošle souhrn zpráv dne po kategoriích hned")
     ap.add_argument("--replay-from", help="zpětná ukázka zpráv od (místní čas, 'YYYY-MM-DD HH:MM')")
     ap.add_argument("--replay-to", help="… do (místní čas, 'YYYY-MM-DD HH:MM')")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
