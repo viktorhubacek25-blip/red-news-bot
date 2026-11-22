@@ -887,7 +887,7 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
     if (gw is not None and local_now.weekday() == gw and local_now.hour >= getattr(C, "GLOSSARY_HOUR", 18)
             and st.get("glossary_date") != today):
         try:
-            if tg.send(glossary_text(local_now), silent=silent):
+            if tg.send(glossary_text(local_now, all_events), silent=silent):
                 st["glossary_date"] = today
         except Exception as e:  # noqa: BLE001
             log(f"Slovníček selhal (zkusím příště): {e}")
@@ -1685,7 +1685,7 @@ def day_digest_text(local_now):
     return "\n".join(lines)
 
 
-def glossary_text(local_now):
+def glossary_text(local_now, cached_events=None):
     """Nedělní slovníček: zkratky z nadcházejícího týdne (s časem a dopadem) + zbytek slovníku."""
     entries = [(abbr, re.compile(p, FLAGS_I) if p else None, what, how)
                for abbr, p, what, how in getattr(C, "GLOSSARY", [])]
@@ -1693,20 +1693,24 @@ def glossary_text(local_now):
     week, err = {}, None
     try:
         raw = json.loads(fetch(C.CALENDAR_URL))
-        now_ts = local_now.timestamp()
-        for e in raw:
-            if e.get("country") not in C.DAILY_CURRENCIES or e.get("impact") not in getattr(
-                    C, "GLOSSARY_IMPACTS", ["High"]):
-                continue
-            dt = datetime.fromisoformat(e["date"]).astimezone(TZ)
-            if dt.timestamp() < now_ts:
-                continue
-            abbr = next((a for a, r, _w, _h in entries if r and r.search(e.get("title", ""))), None)
-            if abbr:
-                week.setdefault(abbr, []).append(dt)
     except Exception as e:  # noqa: BLE001
-        err = e
-        log(f"Slovníček: kalendář nedostupný ({e})")
+        log(f"Slovníček: kalendář nedostupný ({e}), beru uložené události")
+        # záloha: události uložené z hodinového stahování (jen vysoký dopad)
+        raw = [{"title": ev["title"], "country": ev["country"], "impact": ev.get("impact", "High"),
+                "date": datetime.fromtimestamp(ev["ts"], UTC).isoformat()}
+               for ev in (cached_events or []) if not ev.get("holiday")]
+        err = None if raw else e
+    now_ts = local_now.timestamp()
+    for e in raw:
+        if e.get("country") not in C.DAILY_CURRENCIES or e.get("impact") not in getattr(
+                C, "GLOSSARY_IMPACTS", ["High"]):
+            continue
+        dt = datetime.fromisoformat(e["date"]).astimezone(TZ)
+        if dt.timestamp() < now_ts:
+            continue
+        abbr = next((a for a, r, _w, _h in entries if r and r.search(e.get("title", ""))), None)
+        if abbr:
+            week.setdefault(abbr, []).append(dt)
     lines = ["📖 <b>Zkratky na tento týden</b>"]
     if week:
         days = sorted(d for ds in week.values() for d in ds)
@@ -1799,7 +1803,7 @@ def run(args):
         if args.value:
             tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
         if args.glossary:
-            tg.send(glossary_text(local_now))
+            tg.send(glossary_text(local_now, events))
         if args.digest:
             tg.send(day_digest_text(local_now) or "🗞 Souhrn zpráv: dnes nic k odeslání.")
         if args.flows:
