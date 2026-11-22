@@ -1714,8 +1714,10 @@ def glossary_text(local_now, cached_events=None):
     lines = ["📖 <b>Zkratky na tento týden</b>"]
     if week:
         days = sorted(d for ds in week.values() for d in ds)
-        lines[0] = (f"📖 <b>Zkratky na týden {days[0].day}. {days[0].month}.–{days[-1].day}. "
-                    f"{days[-1].month}.</b>")
+        span = f"{days[0].day}. {days[0].month}."
+        if days[-1].date() != days[0].date():
+            span += f"–{days[-1].day}. {days[-1].month}."
+        lines[0] = f"📖 <b>Zkratky na týden {span}</b>"
         lines += ["", "📅 <b>Tento týden vychází</b> <i>(USD)</i>"]
         for abbr, _r, what, how in sorted((x for x in entries if x[0] in week), key=lambda x: min(week[x[0]])):
             when = ", ".join(sorted({f"{CZ_DAYS[d.weekday()][:2]} {d.day}. {d.month}. "
