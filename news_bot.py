@@ -882,6 +882,15 @@ def calendar_tasks(st, all_events, local_now, tg, silent):
                         tg.send(value, silent=silent)
                 except Exception as e:  # noqa: BLE001
                     log(f"Večerní 💰 selhalo: {e}")
+    # Nedělní slovníček zkratek
+    gw = getattr(C, "GLOSSARY_WEEKDAY", None)
+    if (gw is not None and local_now.weekday() == gw and local_now.hour >= getattr(C, "GLOSSARY_HOUR", 18)
+            and st.get("glossary_date") != today):
+        try:
+            if tg.send(glossary_text(local_now), silent=silent):
+                st["glossary_date"] = today
+        except Exception as e:  # noqa: BLE001
+            log(f"Slovníček selhal (zkusím příště): {e}")
     # Souhrn zpráv dne po kategoriích (po zavření US trhu)
     dh = getattr(C, "DAY_DIGEST_HOUR", None)
     if (dh is not None and (local_now.hour, local_now.minute) >= (int(dh), round(dh % 1 * 60))
@@ -1676,6 +1685,55 @@ def day_digest_text(local_now):
     return "\n".join(lines)
 
 
+def glossary_text(local_now):
+    """Nedělní slovníček: zkratky z nadcházejícího týdne (s časem a dopadem) + zbytek slovníku."""
+    entries = [(abbr, re.compile(p, FLAGS_I) if p else None, what, how)
+               for abbr, p, what, how in getattr(C, "GLOSSARY", [])]
+    # ForexFactory začíná týden nedělí → v neděli feed „thisweek“ obsahuje nadcházející týden
+    week, err = {}, None
+    try:
+        raw = json.loads(fetch(C.CALENDAR_URL))
+        now_ts = local_now.timestamp()
+        for e in raw:
+            if e.get("country") not in C.DAILY_CURRENCIES or e.get("impact") not in getattr(
+                    C, "GLOSSARY_IMPACTS", ["High"]):
+                continue
+            dt = datetime.fromisoformat(e["date"]).astimezone(TZ)
+            if dt.timestamp() < now_ts:
+                continue
+            abbr = next((a for a, r, _w, _h in entries if r and r.search(e.get("title", ""))), None)
+            if abbr:
+                week.setdefault(abbr, []).append(dt)
+    except Exception as e:  # noqa: BLE001
+        err = e
+        log(f"Slovníček: kalendář nedostupný ({e})")
+    lines = ["📖 <b>Zkratky na tento týden</b>"]
+    if week:
+        days = sorted(d for ds in week.values() for d in ds)
+        lines[0] = (f"📖 <b>Zkratky na týden {days[0].day}. {days[0].month}.–{days[-1].day}. "
+                    f"{days[-1].month}.</b>")
+        lines += ["", "📅 <b>Tento týden vychází</b> <i>(USD)</i>"]
+        for abbr, _r, what, how in sorted((x for x in entries if x[0] in week), key=lambda x: min(week[x[0]])):
+            when = ", ".join(sorted({f"{CZ_DAYS[d.weekday()][:2]} {d.day}. {d.month}. "
+                                     + ("" if (d.hour, d.minute) == (0, 0) else d.strftime("%H:%M"))
+                                     for d in week[abbr]}))
+            lines += ["", f"<b>{html.escape(abbr)}</b> – <i>{when.strip()}</i>",
+                      html.escape(what[0].upper() + what[1:])]
+            if how:
+                lines.append(f"↕️ {html.escape(how)}")
+    elif err:
+        lines.append("<i>Kalendář na týden se nepodařilo stáhnout – posílám celý slovník.</i>")
+    rest = [(a, w) for a, _r, w, _h in entries if a not in week]
+    if rest:
+        lines += ["", "📚 <b>Další zkratky</b>" if week else "📚 <b>Zkratky</b>"]
+        lines += [f"• <b>{html.escape(a)}</b> – {html.escape(w)}" for a, w in rest]
+    terms = getattr(C, "GLOSSARY_TERMS", [])
+    if terms:
+        lines += ["", "🔤 <b>Jak číst kalendář</b>"]
+        lines += [f"• <b>{html.escape(a)}</b> – {html.escape(w)}" for a, w in terms]
+    return "\n".join(lines)
+
+
 def replay(tg, start, end):
     """Pošle zprávy, které vyšly v okně start–end (místní čas) a prošly by aktuálním skórováním.
     Bere je z Google News (FinancialJuice apod. drží jen posledních pár hodin)."""
@@ -1737,9 +1795,11 @@ def run(args):
             return
 
     if getattr(args, "value", False) or getattr(args, "evening", False) or getattr(args, "flows", False) \
-            or getattr(args, "digest", False):
+            or getattr(args, "digest", False) or getattr(args, "glossary", False):
         if args.value:
             tg.send(morning_value_text(local_now) or "💰 Data za včerejšek zatím nejsou k dispozici.")
+        if args.glossary:
+            tg.send(glossary_text(local_now))
         if args.digest:
             tg.send(day_digest_text(local_now) or "🗞 Souhrn zpráv: dnes nic k odeslání.")
         if args.flows:
@@ -1831,6 +1891,7 @@ def main():
     ap.add_argument("--evening", action="store_true", help="pošle večerní přehled (trhy + zítřek) hned")
     ap.add_argument("--flows", action="store_true", help="pošle ranní 💸 toky do ETF hned")
     ap.add_argument("--digest", action="store_true", help="pošle souhrn zpráv dne po kategoriích hned")
+    ap.add_argument("--glossary", action="store_true", help="pošle nedělní slovníček zkratek hned")
     ap.add_argument("--replay-from", help="zpětná ukázka zpráv od (místní čas, 'YYYY-MM-DD HH:MM')")
     ap.add_argument("--replay-to", help="… do (místní čas, 'YYYY-MM-DD HH:MM')")
     ap.add_argument("--state", default="state.json", help="soubor se stavem")
